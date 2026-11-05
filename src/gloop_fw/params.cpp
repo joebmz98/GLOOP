@@ -107,8 +107,6 @@ const ParamDesc* ShiftParam(Page page, int encoder)
 {
     if(page == Page::Fx && encoder == 0)
         return &kFilterType; // SHIFT + CUTOFF: LP → HP → BP
-    if(page == Page::Grains && encoder == 0)
-        return &kGrainSize;
     if(page == Page::Loop && encoder == 0)
         return &kBpm;
     if(page == Page::Loop && encoder == 1)

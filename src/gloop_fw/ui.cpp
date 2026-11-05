@@ -812,11 +812,109 @@ void Ui::DrawGrains(const UiState& s)
 // =============================================================================
 // FX: filter response (left) | reverb rings (right)
 // =============================================================================
+// ---- Choir (FX page 2, chorus panel) ----------------------------------------
+// 9x15 singer: '.' clear, W/L/M/D/B palette, 'e' = eyes (dark dots, grey
+// when shut while singing), 'o' = mouth (an open "O" when singing),
+// 'r' = robe (front row M, back row D), 'k' = songbook.
+static const char* const kSinger[15] = {
+    "...DDD...", // hair
+    "..DDDDD..", //
+    ".DWWWWWD.", //
+    ".WWWWWWW.", //
+    ".WeWWWeW.", // eyes
+    ".WWWWWWW.", //
+    ".WWWoWWW.", // mouth
+    "..WWoWW..", //
+    "...WWW...", //
+    "..rrrrr..", // robe
+    ".rrrrrrr.", //
+    "rrkkkkkrr", // songbook
+    "rrkkkkkrr", //
+    "rrrrrrrrr", //
+    ".rrrrrrr.", //
+};
+
+static void DrawSinger(Gfx& g, int x, int y, bool back, bool singing)
+{
+    const uint16_t skin = back ? L : W;
+    for(int row = 0; row < 15; row++)
+        for(int col = 0; col < 9; col++)
+        {
+            uint16_t c;
+            switch(kSinger[row][col])
+            {
+                case 'W': c = skin; break;
+                case 'D': c = back ? D : M; break;
+                case 'e': c = singing ? M : B; break; // singing: eyes shut
+                case 'o':
+                    if(singing)
+                        c = B;
+                    else
+                        c = row == 6 ? D : skin; // closed: a small dash
+                    break;
+                case 'r': c = back ? D : M; break;
+                case 'k': c = back ? M : L; break;
+                default: continue;
+            }
+            g.Pixel(x + col, y + row, c);
+        }
+}
+
+static void DrawChoir(Gfx& g, const UiState& s, uint32_t frame)
+{
+    const Params& p  = *s.params;
+    const bool    on = p.chorus_mix > 0.001f;
+    // How many sing: 1 (silent) at MIX 0, then 2..8 as MIX goes up
+    const int n = on ? 2 + int(p.chorus_mix * 6.f + 0.5f) : 1;
+
+    // Places: back row (4) behind, front row (4) between them. They join in
+    // from the middle outwards.
+    struct Spot { int x, y; bool back; };
+    static const Spot kSpots[8] = {
+        {108, 55, false}, {119, 55, false}, {103, 40, true}, {114, 40, true},
+        {97, 55, false},  {130, 55, false}, {125, 40, true}, {92, 40, true},
+    };
+    // Back row first so the front row overlaps it
+    for(int pass = 0; pass < 2; pass++)
+        for(int i = 0; i < n; i++)
+        {
+            const Spot& sp = kSpots[i];
+            if(sp.back != (pass == 0))
+                continue;
+            // Each singer opens and closes in time with the chorus LFO, a bit
+            // out of step with the others (that's what a chorus is...)
+            float ph = s.chorus_phase + i * 0.37f;
+            ph -= floorf(ph);
+            const bool singing = on && ph < 0.6f;
+            const int  bob     = singing ? -1 : 0;
+            DrawSinger(g, sp.x, sp.y + bob, sp.back, singing);
+        }
+    // Riser under the front row
+    g.HLine(92, 139, 70, D);
+
+    // Notes floating up: more singers, more notes
+    if(on)
+    {
+        static const char* const kNote[5] = {"..WW", "..W.", "..W.", "WWW.", "WW.."};
+        const int notes = (n + 1) / 3;
+        for(int k = 0; k < notes; k++)
+        {
+            const int t  = int((frame + k * 23) % 40); // 40 frames to rise
+            const int nx = 96 + ((k * 17 + int(frame + k * 23) / 40 * 13) % 38);
+            const int ny = 36 - t / 3;
+            const uint16_t c = t < 26 ? L : M; // fade near the top
+            for(int r = 0; r < 5; r++)
+                for(int q = 0; q < 4; q++)
+                    if(kNote[r][q] == 'W')
+                        g.Pixel(nx + q, ny + r, c);
+        }
+    }
+}
+
 // FX page 2 (FX pressed again): resonator modes | chorus LFOs
 static void DrawFxPage2(Gfx& g, const UiState& s, uint32_t frame)
 {
     const Params& p = *s.params;
-    (void)frame;
 
     // ---- Resonator: one line per mode at its frequency (log scale, 30 Hz ..
     //      16 kHz). STRUCTURE squeezes/stretches the spacing, BRIGHT and
@@ -865,27 +963,10 @@ static void DrawFxPage2(Gfx& g, const UiState& s, uint32_t frame)
 
     g.VLine(89, kBodyTop, kBodyBot, D, false); // divider
 
-    // ---- Chorus: the two delay sweeps (L and R, a quarter cycle apart) --------
+    // ---- Chorus: a little choir. MIX sets how many are singing (1 silent
+    //      singer at MIX 0, up to 8), RATE how fast their mouths move.
     g.Chip(92, 13, "CHORUS", Gfx::kSmall);
-    const int x0 = 98, w = 40, top = 26, bot = 82;
-    const float amp = 4.f + 12.f * p.chorus_mix; // taller when mixed in more
-    for(int ch = 0; ch < 2; ch++)
-    {
-        const int   mid  = ch == 0 ? top + 14 : bot - 14;
-        const float off  = ch == 0 ? 0.f : 0.25f;
-        int         prv  = mid;
-        for(int x = 0; x < w; x++)
-        {
-            float ph = s.chorus_phase + off + float(x) / w; // scrolls with the LFO
-            ph -= floorf(ph);
-            const float tri = 4.f * fabsf(ph - 0.5f) - 1.f;
-            const int   y   = mid - int(tri * amp);
-            if(x > 0)
-                g.Line(x0 + x - 1, prv, x0 + x, y, p.chorus_mix > 0.001f ? W : M);
-            prv = y;
-        }
-        g.Text(x0 - 6, mid - 3, ch == 0 ? "L" : "R", M, Gfx::kSmall);
-    }
+    DrawChoir(g, s, frame);
 }
 
 void Ui::DrawFx(const UiState& s)

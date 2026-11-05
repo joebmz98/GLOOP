@@ -71,7 +71,7 @@ Everything acts on the **selected track** (T1 or T2, shown in the header chip). 
 - **SHIFT + LENGTH** frees the length from the grid (shown in seconds). Turning LENGTH again without SHIFT snaps it back onto the nearest 8th.
 - **GRAINS 0** is just the loop; **1–12** add that many grains alongside the loop. The cloud's level is matched to the loop automatically, so changing GRAINS / SPRAY / ENV / SIZE doesn't jump the volume.
 - **MIX** (GRAINS encoder 4) balances the loop against the grains: 0% = loop only, 100% = grains only, **50% (default)** = both at -3 dB (an equal-power blend), which keeps the total about as loud as the loop on its own.
-- **Press GRAINS again** while on the GRAINS page for the **alt layer**: encoder 1 = grain **SIZE**, encoder 3 = grain **PITCH** (±24 semitones, the grains only; the loop keeps its own PITCH), encoder 4 = grain **ENVELOPE** (window shape). Their labels show inverted; press GRAINS again to go back. SHIFT + encoder 1 also reaches SIZE.
+- **Press GRAINS again** while on the GRAINS page for the **alt layer**: encoder 1 = grain **SIZE**, encoder 3 = grain **PITCH** (±24 semitones, the grains only; the loop keeps its own PITCH), encoder 4 = grain **ENVELOPE** (window shape). Their labels show inverted; press GRAINS again to go back.
 - **SHIFT + CUTOFF** switches the filter between **LP**, **HP** and **BP** (shown next to FILTER). If the filter was wide open it stays open for the new type (e.g. HP moves CUTOFF to the bottom), and pushing CUTOFF resets it to the open position for the current type. Types crossfade over 5 ms, so switching doesn't click.
 - **Press FX again** while on the FX page for **FX page 2**: a **resonator** (DaisySP's Rings-style modal resonator) and the chorus. Per track the order is **Filter → Chorus → Resonator → Reverb**. Press FX again to go back.
   - Enc 1 **FREQ**: the note it rings at (C1–C7, shown as e.g. `A2`). Enc 2 **BRIGHT**: wood (upper overtones die fast) → glass.
@@ -79,6 +79,7 @@ Everything acts on the **selected track** (T1 or T2, shown in the header chip). 
   - SHIFT + enc 2 **DECAY**: how long it rings, from a dull knock to a ~30 s drone (DaisySP calls this "damping"; higher = rings longer).
   - SHIFT + enc 4 **R.MIX**: resonator dry/wet. **0% = off** (the default, and it then costs no CPU); 100% = resonator only. Its level is matched to the input automatically, so DECAY and FREQ don't make the volume jump.
   - Enc 3 / 4 **CH.RATE / CH.MIX**: the chorus (0.05–10 Hz; mix 0 = off).
+  - The chorus panel is a little choir: one silent singer at CH.MIX 0, up to eight singing at 100%, mouths opening and closing at CH.RATE.
   - The screen draws one line per overtone at its pitch (log scale), taller when brighter, pulsing with the resonator's output.
 - **SHIFT + T1 / T2 mutes** that track (press again to unmute). It keeps playing silently, so it stays in sync; the fade is about 4 ms so there's no click. A muted track's header chip turns dark, and the footer shows **M** next to the other track when that one is muted. Its reverb tail still rings out.
 - SHIFT + turn = fine adjust (or the alternate parameter). Push an encoder to reset its parameter.

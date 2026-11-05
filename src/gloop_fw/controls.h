@@ -23,7 +23,6 @@
 //                                parameter where one exists:
 //                                  LOOP enc 1 (START)  → BPM (both tracks)
 //                                  LOOP enc 2 (LENGTH) → FREE length
-//                                  GRAINS enc 1        → grain SIZE
 //                                  FX enc 1 (CUTOFF)   → filter TYPE LP/HP/BP
 //   LENGTH                     : steps in 8th notes at the BPM. If the length
 //                                was free, the first turn snaps it back onto
