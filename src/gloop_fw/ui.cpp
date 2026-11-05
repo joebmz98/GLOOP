@@ -107,6 +107,22 @@ void Ui::DrawHeader(const UiState& s)
     DrawTrackChip(s);
     g_.Text(16, 2, kPageNames[int(s.page)], W, Gfx::kBig);
 
+    // Tempo next to the page name on the LOOP page, e.g. "120 BPM"
+    if(s.page == Page::Loop)
+    {
+        char bpm[12];
+        int  b = int(lroundf(s.params->bpm)), k = 0;
+        if(b >= 100)
+            bpm[k++] = char('0' + b / 100);
+        bpm[k++] = char('0' + (b / 10) % 10);
+        bpm[k++] = char('0' + b % 10);
+        const char* tail = " BPM";
+        for(; *tail; tail++)
+            bpm[k++] = *tail;
+        bpm[k] = 0;
+        g_.Text(42, 4, bpm, s.shift ? W : M, Gfx::kSmall);
+    }
+
     const TapeLoop& t  = *s.tape;
     const bool      on = (frame_ / 8) % 2 == 0;
     if(t.IsArmed())
@@ -671,7 +687,7 @@ void Ui::DrawCatActor(int count)
         case kWaking:
         case kSettling:
             // Sitting up on the bench; looks around (blinks) before moving
-            DrawCatSitting(sit_bench_x, sit_bench_y, (cat_t_ / 5) % 2, count > 0, sway);
+            DrawCatSitting(sit_bench_x, sit_bench_y, (cat_t_ / 5) % 2, count >= 2, sway);
             break;
         case kJumpDown:
             hop(ease(cat_t_ / 12.f), sit_bench_x, sit_bench_y, sit_side_x, sit_side_y);
@@ -700,7 +716,7 @@ void Ui::DrawGrains(const UiState& s)
 {
     const Params& p       = *s.params;
     const int     count   = int(p.grains + 0.5f);
-    const bool    raining = count > 0;
+    const bool    raining = count >= 2; // GRAINS 1 = the plain loop
 
     UpdateCat(raining);
 
@@ -877,13 +893,17 @@ void Ui::DrawReadouts(const UiState& s)
         else
         {
             char buf[12];
-            if(d.format == Format::Seconds)
+            // LENGTH while free (not synced): show the free length in seconds
+            const bool free_len = d.field == &Params::length8 && !s.params->synced;
+            if(d.format == Format::Seconds || free_len)
             {
                 float secs = 0.f;
                 if(t.HasLoop())
                     secs = (d.field == &Params::start ? t.RegionStart() : t.RegionLength())
                            / s.sample_rate;
-                FormatValue(d, secs, 1.f, buf, sizeof(buf));
+                static const ParamDesc kSecs
+                    = {"", nullptr, 0.f, 1.f, 0.f, 0.f, false, false, Format::Seconds};
+                FormatValue(free_len ? kSecs : d, secs, 1.f, buf, sizeof(buf));
             }
             else
                 FormatValue(d, v, 1.f, buf, sizeof(buf));

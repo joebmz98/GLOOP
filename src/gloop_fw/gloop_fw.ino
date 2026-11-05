@@ -72,7 +72,19 @@ struct Track
     const char* tape_name = nullptr; // sample loaded onto the tape (label)
     float       grain_l[kMaxBlock];  // this block's grain output
     float       grain_r[kMaxBlock];
+
+    // Grain level matching (see "Level match" in AudioCallback)
+    float ref_ms   = 0.f; // smoothed mean-square of the plain loop at the head
+    float grain_ms = 0.f; // smoothed mean-square of the raw grain output
+    float gain     = 1.f; // gain that makes the grains as loud as the loop
+    float gain_prev = 1.f;
 };
+
+// Length of one 8th note in samples
+static inline float EighthSamples(float bpm, float sr)
+{
+    return 60.f / bpm * 0.5f * sr;
+}
 
 // ---- Objects -------------------------------------------------------------------
 static DaisyHardware hw;
@@ -151,6 +163,11 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
     {
         if(!tracks[t].tape.ConsumeTakeDone())
             continue;
+        // Fit the new take to the BPM grid: as many whole 8th notes as the
+        // recording holds (from the START point)
+        Params&     np     = tracks[t].params;
+        const float avail  = float(tracks[t].tape.RecordedLength()) * (1.f - np.start);
+        np.length8         = fmaxf(1.f, floorf(avail / EighthSamples(np.bpm, sample_rate)));
         bool others_playing = false;
         for(int o = 0; o < kNumTracks; o++)
             if(o != t)
@@ -172,11 +189,15 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
         const Params& p    = tr.params;
         const float   rate = powf(2.f, p.pitch / 12.f); // varispeed
 
-        tr.tape.SetRegion(p.start, p.length, p.xfade, sample_rate);
+        // LENGTH: whole 8th notes at the BPM (synced), or free (SHIFT+LENGTH)
+        const float len_smp = p.synced ? p.length8 * EighthSamples(p.bpm, sample_rate) : -1.f;
+        tr.tape.SetRegion(p.start, p.length, p.xfade, sample_rate, len_smp);
         tr.tape.SetRate(rate);
 
+        // GRAINS 1 = the plain loop (one "grain" as long as the loop);
+        // the grain cloud takes over from 2
         const int count = int(p.grains + 0.5f);
-        grain_mode[t]   = count > 0;
+        grain_mode[t]   = count >= 2;
         playing[t]      = tr.tape.IsPlaying();
         if(playing[t] && !was_playing[t])
             tr.cloud.Reset(); // (re)started: begin with a fresh grain cloud
@@ -195,6 +216,15 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
     reverb_bus.SetParams(tracks[0].params.rev_size, any_send); // SIZE is shared
 
     // ---- 4. Per sample: record, tape playback, filter, mix, reverb, out ----
+    //
+    // Level match: in grain mode the plain loop is still read at the play
+    // head (not heard) and both its level and the grains' level are tracked.
+    // A slowly-moving gain then makes the grain cloud as loud as the loop, so
+    // switching GRAINS 1 → 2..12, or changing SPRAY / ENV / SIZE, doesn't
+    // change the volume. The gain ramps across each block (no zipper noise).
+    float ref_sum[kNumTracks]   = {0.f, 0.f};
+    float grain_sum[kNumTracks] = {0.f, 0.f};
+    const float inv_size        = 1.f / float(size);
     float in_pk = 0.f;
     for(size_t i = 0; i < size; i++)
     {
@@ -214,6 +244,16 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
             {
                 if(!grain_mode[t])
                     tr.tape.ReadTape(l, r);
+                else
+                {
+                    float rl, rr; // the plain loop at the head: level reference
+                    tr.tape.ReadTape(rl, rr);
+                    ref_sum[t] += rl * rl + rr * rr;
+                    grain_sum[t] += l * l + r * r;
+                    const float g = tr.gain_prev + (tr.gain - tr.gain_prev) * float(i + 1) * inv_size;
+                    l *= g;
+                    r *= g;
+                }
                 tr.tape.Advance();
             }
             tr.filter.Process(l, r);
@@ -233,6 +273,24 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
         out[1][i] = OutputLimit(mix_r + wet_r + in_r);
     }
     input_peak = in_pk;
+
+    // Update the level match from this block (used from the next block)
+    for(int t = 0; t < kNumTracks; t++)
+    {
+        Track& tr     = tracks[t];
+        tr.gain_prev  = tr.gain;
+        if(!(playing[t] && grain_mode[t]))
+            continue;
+        const float k = 0.005f; // ~0.2 s smoothing at 1000 blocks/s
+        tr.ref_ms += k * (ref_sum[t] * inv_size - tr.ref_ms);
+        tr.grain_ms += k * (grain_sum[t] * inv_size - tr.grain_ms);
+        if(tr.ref_ms > 1e-7f && tr.grain_ms > 1e-9f) // hold during silence
+        {
+            float target = sqrtf(tr.ref_ms / tr.grain_ms);
+            target       = fminf(4.f, fmaxf(0.25f, target)); // ±12 dB at most
+            tr.gain += 0.02f * (target - tr.gain);           // ~50 ms glide
+        }
+    }
 
     cpu.BlockEnd();
 }
@@ -258,7 +316,7 @@ void setup()
         tracks[t].filter.Init(sample_rate);
     }
     reverb_bus.Init(sample_rate, &reverb);
-    controls.Init(sample_rate / kBlockSize); // controls run once per block
+    controls.Init(sample_rate / kBlockSize, sample_rate); // once per block
 
     display.Init();
     ui.Init(&display, &envelopes);

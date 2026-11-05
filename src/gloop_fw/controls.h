@@ -13,8 +13,14 @@
 //   LOOP / GRAINS / FX buttons : choose which page the 4 encoders edit
 //   Encoder turn               : edit that page's parameter (selected track)
 //   SHIFT + turn               : fine adjust (×0.1), or the alternate
-//                                parameter where one exists
-//                                (GRAINS page, encoder 1 → grain SIZE)
+//                                parameter where one exists:
+//                                  LOOP enc 1 (START)  → BPM (both tracks)
+//                                  LOOP enc 2 (LENGTH) → FREE length
+//                                  GRAINS enc 1        → grain SIZE
+//   LENGTH                     : steps in 8th notes at the BPM. If the length
+//                                was free, the first turn snaps it back onto
+//                                the 8th-note grid.
+//   SHIFT + LENGTH             : free length, not locked to the BPM
 //   Encoder push               : reset that parameter to its default
 //   REC                        : ARM: recording starts when input arrives.
 //                                Again while armed: cancel. While recording:
@@ -49,8 +55,9 @@ static constexpr int kNumTracks = 2;
 class Controls
 {
   public:
-    void Init(float update_rate)
+    void Init(float update_rate, float sample_rate)
     {
+        sr_ = sample_rate;
         for(int i = 0; i < 4; i++)
             enc_[i].Init(update_rate,
                          pins::kEncA[i],
@@ -137,7 +144,24 @@ class Controls
             const ParamDesc& d   = alt ? *alt : kPageParams[int(page_)][i];
             float&           v   = p.*(d.field);
             int              inc = enc_[i].Increment();
-            const float      old = v;
+            const bool       push = enc_[i].RisingEdge();
+
+            // LENGTH ↔ FREE: carry the current length across when switching,
+            // so the loop doesn't jump
+            if(inc != 0 && tape.HasLoop())
+            {
+                const float eighth = Eighth(p.bpm);
+                if(d.field == &Params::length8 && !p.synced)
+                    v = roundf(float(tape.RegionLength()) / eighth); // snap
+                if(d.field == &Params::length && p.synced)
+                {
+                    const float room = float(tape.RecordedLength()) - float(tape.RegionStart())
+                                       - float(TapeLoop::kMinLoop);
+                    if(room > 0.f)
+                        v = (float(tape.RegionLength()) - float(TapeLoop::kMinLoop)) / room;
+                }
+            }
+            const float old = v;
 
             if(inc != 0)
             {
@@ -157,13 +181,30 @@ class Controls
                 if(d.integer)
                     v = roundf(v);
             }
-            if(enc_[i].RisingEdge())
+            if(push)
                 v = d.def;
 
-            // Shared reverb SIZE: keep both tracks' copies equal
-            if(v != old && d.field == &Params::rev_size)
+            // Which length mode is in charge
+            if(inc != 0 || push)
+            {
+                if(d.field == &Params::length8)
+                    p.synced = true;
+                if(d.field == &Params::length)
+                    p.synced = false;
+            }
+
+            // Synced length can't be longer than the recording allows
+            if(d.field == &Params::length8 && tape.HasLoop())
+            {
+                const float room = float(tape.RecordedLength()) - float(tape.RegionStart());
+                const float max8 = fmaxf(1.f, floorf(room / Eighth(p.bpm)));
+                v                = fminf(v, max8);
+            }
+
+            // Shared settings (one reverb, one tempo): keep both tracks equal
+            if(v != old && (d.field == &Params::rev_size || d.field == &Params::bpm))
                 for(int t = 0; t < kNumTracks; t++)
-                    params[t]->rev_size = v;
+                    params[t]->*(d.field) = v;
         }
 
         Transport(tape, tapes);
@@ -172,6 +213,9 @@ class Controls
     Page page() const { return page_; }
     bool shift() const { return shift_held_; }
     int  selected_track() const { return selected_track_; }
+
+    // Length of one 8th note in samples
+    float Eighth(float bpm) const { return 60.f / bpm * 0.5f * sr_; }
 
   private:
     // REC acts on the selected track; PLAY on both. Works with the browser
@@ -211,6 +255,7 @@ class Controls
     int            selected_track_ = 0; // T1 selected at power-up
     Page           page_           = Page::Loop;
     bool           shift_held_     = false;
+    float          sr_             = 48000.f;
 };
 
 } // namespace gloop

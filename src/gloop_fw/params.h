@@ -13,13 +13,18 @@ namespace gloop
 struct Params
 {
     // LOOP page
-    float start  = 0.f;   // 0..1  start point within the recording
-    float length = 1.f;   // 0..1  fraction of what remains after start
-    float pitch  = 0.f;   // -24..+24 semitones (varispeed, like tape)
-    float xfade  = 0.02f; // 0..0.25 s crossfade across the loop seam
+    float start   = 0.f;   // 0..1  start point within the recording
+    float length8 = 8.f;   // loop length in 8th notes at the BPM (synced)
+    float length  = 1.f;   // 0..1  free length: fraction of what remains
+                           //       after start (SHIFT + LENGTH)
+    bool  synced  = true;  // true: length8 (BPM grid); false: free length
+    float pitch   = 0.f;   // -24..+24 semitones (varispeed, like tape)
+    float xfade   = 0.02f; // 0..0.25 s crossfade across the loop seam
+    float bpm     = 120.f; // 40..240, shared by both tracks (SHIFT + START)
 
     // GRAINS page
-    float grains     = 0.f;   // 0 = plain tape playback, 1..12 overlapping grains
+    float grains     = 1.f;   // 1 = plain loop (one "grain" the length of the
+                              //     loop), 2..12 overlapping grains
     float spray      = 0.1f;  // 0..1 position randomness around the play head
     float spread     = 0.3f;  // 0..1 stereo randomness
     float envelope   = 0.f;   // 0..9 grain window shape (Quanta-style list)
@@ -50,6 +55,7 @@ enum class Format
     Int,       // → "12"
     EnvName,   // → "PERC"
     Hertz,     // 0..1 cutoff → "2.4K"
+    Eighths,   // 8th-note count → "6/8", "16/8"
 };
 
 // Describes one encoder's job on one page

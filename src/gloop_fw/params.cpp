@@ -13,11 +13,11 @@ namespace gloop
 const ParamDesc kPageParams[kNumPages][4] = {
     // LOOP
     {{"START", &Params::start, 0.f, 1.f, 0.005f, 0.f, false, false, Format::Seconds},
-     {"LENGTH", &Params::length, 0.f, 1.f, 0.005f, 1.f, false, false, Format::Seconds},
+     {"LENGTH", &Params::length8, 1.f, 256.f, 1.f, 8.f, true, false, Format::Eighths},
      {"PITCH", &Params::pitch, -24.f, 24.f, 1.f, 0.f, false, false, Format::Semitones},
      {"XFADE", &Params::xfade, 0.f, 0.25f, 0.005f, 0.02f, false, false, Format::Millis}},
     // GRAINS
-    {{"GRAINS", &Params::grains, 0.f, 12.f, 1.f, 0.f, true, false, Format::Int},
+    {{"GRAINS", &Params::grains, 1.f, 12.f, 1.f, 1.f, true, false, Format::Int},
      {"SPRAY", &Params::spray, 0.f, 1.f, 0.01f, 0.1f, false, false, Format::Percent},
      {"SPREAD", &Params::spread, 0.f, 1.f, 0.01f, 0.3f, false, false, Format::Percent},
      {"ENV", &Params::envelope, 0.f, 9.f, 1.f, 0.f, true, true, Format::EnvName}},
@@ -31,10 +31,22 @@ const ParamDesc kPageParams[kNumPages][4] = {
 static const ParamDesc kGrainSize
     = {"SIZE", &Params::grain_size, 0.01f, 0.5f, 0.005f, 0.08f, false, false, Format::Millis};
 
+// SHIFT + START: tempo (shared by both tracks)
+static const ParamDesc kBpm
+    = {"BPM", &Params::bpm, 40.f, 240.f, 1.f, 120.f, true, false, Format::Int};
+
+// SHIFT + LENGTH: free length, not locked to the BPM grid
+static const ParamDesc kFreeLength
+    = {"FREE", &Params::length, 0.f, 1.f, 0.005f, 1.f, false, false, Format::Seconds};
+
 const ParamDesc* ShiftParam(Page page, int encoder)
 {
     if(page == Page::Grains && encoder == 0)
         return &kGrainSize;
+    if(page == Page::Loop && encoder == 0)
+        return &kBpm;
+    if(page == Page::Loop && encoder == 1)
+        return &kFreeLength;
     return nullptr;
 }
 
@@ -130,6 +142,10 @@ void FormatValue(const ParamDesc& d,
             Append(out, p, n, "ST");
             break;
         case Format::Int: AppendInt(out, p, n, (int)lroundf(v)); break;
+        case Format::Eighths:
+            p = AppendInt(out, p, n, (int)lroundf(v));
+            Append(out, p, n, "/8");
+            break;
         case Format::EnvName:
         {
             int i = (int)lroundf(v);

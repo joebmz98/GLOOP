@@ -53,8 +53,8 @@ D1–D6 are also the Seed's SD card pins: when SD loading is added, the buttons 
 
 | Page | Enc 1 | Enc 2 | Enc 3 | Enc 4 |
 |---|---|---|---|---|
-| LOOP | Start | Length | Pitch (±24 st) | Crossfade |
-| GRAINS | Grains (0 = tape, 1–12) · SHIFT: Size | Spray | Spread | Envelope |
+| LOOP | Start · SHIFT: **BPM** | Length (8th notes) · SHIFT: **free length** | Pitch (±24 st) | Crossfade |
+| GRAINS | Grains (1 = plain loop, 2–12 = grain cloud) · SHIFT: Size | Spray | Spread | Envelope |
 | FX | Cutoff | Resonance | Reverb size | Reverb mix |
 
 Everything acts on the **selected track** (T1 or T2, shown in the header chip). The footer's bottom-left shows what the other track is doing.
@@ -65,6 +65,10 @@ Everything acts on the **selected track** (T1 or T2, shown in the header chip). 
 - While recording, REC or PLAY closes the loop and plays it. A take stops by itself at **30 s** (`kMaxLoopSeconds`).
 - **PLAY is global:** it stops both tracks if either is playing, otherwise starts both from their loop start points, in sync. If the selected track is recording, PLAY finishes the take instead.
 - **When a take finishes** (REC, PLAY or the 30 s limit): if the other track is already playing, the new loop **joins in** straight away; if nothing was playing, both tracks start together from their loop start.
+- **BPM:** SHIFT + START sets the tempo (40–240, shared by both tracks), shown next to LOOP in the header.
+- **LENGTH** is counted in 8th notes at that BPM (shown as e.g. `6/8`, `16/8`), so loops stay in time when the BPM changes. A new take is fitted to the most whole 8ths it holds.
+- **SHIFT + LENGTH** frees the length from the grid (shown in seconds). Turning LENGTH again without SHIFT snaps it back onto the nearest 8th.
+- **GRAINS 1** plays the plain loop (a loop is like one grain the length of the loop); the grain cloud takes over from 2. The grain cloud's level is matched to the plain loop's automatically, so switching modes or changing SPRAY / ENV / SIZE doesn't change the volume.
 - SHIFT + turn = fine adjust (or the alternate parameter). Push an encoder to reset its parameter.
 - Reverb **SIZE** is shared by both tracks (one reverb); each track's **MIX** is its send into it. Every other parameter is per track.
 - Hold SHIFT to show CPU load (peak / average) in the footer.

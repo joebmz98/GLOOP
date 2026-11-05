@@ -130,13 +130,22 @@ class TapeLoop
     }
 
     // ---- Region & speed (block rate) ----------------------------------------
-    void SetRegion(float start01, float length01, float xfade_s, float sr)
+    // length_samples > 0: exact loop length (BPM-synced, clamped to what the
+    // recording allows); otherwise length01 is a free fraction of the rest.
+    void SetRegion(float start01, float length01, float xfade_s, float sr, float length_samples = -1.f)
     {
         if(rec_len_ == 0)
             return;
         const uint32_t total = rec_len_;
         start_ = uint32_t(start01 * float(total - kMinLoop));
-        len_   = kMinLoop + uint32_t(length01 * float(total - start_ - kMinLoop));
+        if(length_samples > 0.f)
+        {
+            uint32_t want = uint32_t(length_samples + 0.5f);
+            uint32_t room = total - start_;
+            len_          = want < kMinLoop ? kMinLoop : (want > room ? room : want);
+        }
+        else
+            len_ = kMinLoop + uint32_t(length01 * float(total - start_ - kMinLoop));
         // start_ + len_ <= total always holds: grains rely on it
         xfade_ = fminf(xfade_s * sr, float(len_) * 0.5f);
         if(head_ >= len_)

@@ -87,8 +87,9 @@ class GrainCloud
         rate_     = rate;
         // Level: overlapping grains add up. Partly-correlated grains (low
         // SPRAY) add up faster than 1/sqrt(N) assumes, so use N^0.65, tuned so
-        // a full-scale recording stays below full scale at every grain count.
-        norm_ = count_ > 0 ? 0.75f / powf(float(count_), 0.65f) : 0.f;
+        // the cloud lands near the plain loop's level; the level match in
+        // gloop_fw.ino then trims the rest, and the output limiter catches peaks.
+        norm_ = count_ > 0 ? 2.4f / powf(float(count_), 0.65f) : 0.f;
     }
 
     // Adds the cloud's output for one block into out_l / out_r.
