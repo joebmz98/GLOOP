@@ -36,6 +36,12 @@ struct Params
     float reso     = 0.f;  // 0..1
     float rev_size = 0.5f; // 0..1 → reverb feedback
     float rev_mix  = 0.f;  // 0..1 dry/wet
+
+    // FX page 2 (FX pressed again). Chain: filter → chorus → drive → reverb
+    float drive       = 0.f;  // 0..1 distortion amount (0 = off)
+    float drive_tone  = 0.6f; // 0..1 dark → bright (600 Hz..18 kHz low-pass)
+    float chorus_rate = 0.3f; // 0..1 → 0.05..10 Hz
+    float chorus_mix  = 0.f;  // 0..1 (0 = off, 1 = classic 50/50 chorus)
 };
 
 enum class Page : int
@@ -57,6 +63,7 @@ enum class Format
     EnvName,   // → "PERC"
     Hertz,     // 0..1 cutoff → "2.4K"
     Eighths,   // 8th-note count → "6/8", "16/8"
+    LfoHz,     // 0..1 → 0.05..10 Hz → "0.8HZ"
 };
 
 // Describes one encoder's job on one page
@@ -80,6 +87,10 @@ const ParamDesc* ShiftParam(Page page, int encoder);
 // GRAINS alt layer (GRAINS pressed again): encoder 1 = SIZE, encoder 3 =
 // grain PITCH; nullptr for encoders that keep their normal job
 const ParamDesc* GrainsAltParam(int encoder);
+
+// The alt layer of a page (page button pressed again): GRAINS → SIZE /
+// grain PITCH, FX → drive and chorus. nullptr = encoder keeps its job.
+const ParamDesc* AltParam(Page page, int encoder);
 
 // Envelope shape names, shared by the UI and the formatter
 extern const char* const kEnvelopeNames[10];

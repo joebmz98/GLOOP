@@ -1,6 +1,6 @@
 # GLOOP — 2-track granular looper firmware
 
-Daisy Seed firmware, built with the Arduino IDE. Two tracks, each: tape looper → grain cloud → low-pass filter, mixed into one shared reverb. 240×280 ST7789 TFT (landscape) and a sample browser.
+Daisy Seed firmware, built with the Arduino IDE. Two tracks, each: tape looper → grain cloud → low-pass filter → chorus → drive, mixed into one shared reverb. 240×280 ST7789 TFT (landscape) and a sample browser.
 
 ## Arduino IDE setup (once)
 
@@ -55,7 +55,7 @@ D1–D6 are also the Seed's SD card pins: when SD loading is added, the buttons 
 |---|---|---|---|---|
 | LOOP | Start · SHIFT: **BPM** | Length (8th notes) · SHIFT: **free length** | Pitch (±24 st) | Crossfade |
 | GRAINS | Grains (0 = loop only, 1–12 = grains on top of the loop) · alt: **Size** | Spray | Spread · alt: **Grain pitch** (±24 st) | Envelope |
-| FX | Cutoff | Resonance | Reverb size | Reverb mix |
+| FX | Cutoff · page 2: **Drive** | Resonance · page 2: **Tone** | Reverb size · page 2: **Chorus rate** | Reverb mix · page 2: **Chorus mix** |
 
 Everything acts on the **selected track** (T1 or T2, shown in the header chip). The footer's bottom-left shows what the other track is doing.
 
@@ -71,6 +71,8 @@ Everything acts on the **selected track** (T1 or T2, shown in the header chip). 
 - **SHIFT + LENGTH** frees the length from the grid (shown in seconds). Turning LENGTH again without SHIFT snaps it back onto the nearest 8th.
 - **GRAINS 0** is just the loop; **1–12** layer that many grains **on top of the loop**, which keeps playing underneath. The cloud's level is matched to the loop automatically and sits about 3 dB under it, so changing GRAINS / SPRAY / ENV / SIZE doesn't jump the volume.
 - **Press GRAINS again** while on the GRAINS page for the **alt layer**: encoder 1 = grain **SIZE**, encoder 3 = grain **PITCH** (±24 semitones, the grains only; the loop underneath keeps its own PITCH). Their labels show inverted; press GRAINS again to go back. SHIFT + encoder 1 also reaches SIZE.
+- **Press FX again** while on the FX page for **FX page 2**: DRIVE (soft-clip distortion, 0 = off), TONE (dark → bright after the clipper), CH.RATE (chorus LFO 0.05–10 Hz) and CH.MIX (0 = off, 100% = classic 50/50 chorus). The screen shows the drive curve and the two chorus sweeps (L/R a quarter cycle apart). Press FX again to go back. Per track the order is **Filter → Chorus → Drive → Reverb**.
+- **SHIFT + T1 / T2 mutes** that track (press again to unmute). It keeps playing silently, so it stays in sync; the fade is about 4 ms so there's no click. A muted track's header chip turns dark, and the footer shows **M** next to the other track when that one is muted. Its reverb tail still rings out.
 - SHIFT + turn = fine adjust (or the alternate parameter). Push an encoder to reset its parameter.
 - Reverb **SIZE** is shared by both tracks (one reverb); each track's **MIX** is its send into it. Every other parameter is per track.
 - Hold SHIFT to show CPU load (peak / average) in the footer.
@@ -95,7 +97,7 @@ Hold SHIFT to read the audio CPU load: **PK** (worst block in the last second) a
 | `tape_loop.h` | 16-bit interleaved record buffer, record-arm with pre-roll, loop region, play head, seam crossfade |
 | `grains.h` | Grain pool (12 voices), block-based renderer, spray/spread/envelope, CPU throttle |
 | `envelopes.h` | 10 grain window lookup tables + level compensation |
-| `fx.h` | Per-track stereo SVF low-pass + one shared ReverbSc (idles when every MIX is 0) |
+| `fx.h` | Per-track stereo SVF low-pass, stereo chorus and drive + one shared ReverbSc (idles when every MIX is 0) |
 | `controls.h` | Encoders/buttons → params, transport, track buttons, browser |
 | `browser.h` | Sample browser state + sample library (stand-in until SD) |
 | `params.h/.cpp` | Parameter struct, page map, value formatting |

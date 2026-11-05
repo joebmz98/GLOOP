@@ -37,7 +37,10 @@ struct UiState
     bool            metro_active  = false; // metronome clicking
     bool            metro_enabled = true;  // SHIFT + PLAY toggles
     int             metro_beat    = 0;     // 0..3 within the bar
-    bool            grain_size_mode = false; // GRAINS pressed twice: enc 1 = SIZE
+    bool            grain_size_mode = false; // page button pressed twice: alt layer
+    bool            muted        = false; // selected track muted
+    bool            other_muted  = false; // other track muted
+    float           chorus_phase = 0.f;   // for the FX page 2 picture
     const char*    tape_name      = nullptr; // sample on the tape (label)
     const char*    load_name      = nullptr; // sample being loaded
     float          load_progress  = -1.f;    // 0..1 while loading, else <0

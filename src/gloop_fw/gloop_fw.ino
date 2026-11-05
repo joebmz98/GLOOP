@@ -69,7 +69,10 @@ struct Track
     Params      params;
     TapeLoop    tape;
     GrainCloud  cloud;
-    TrackFilter filter;
+    TrackFilter  filter;
+    StereoChorus chorus;
+    Drive        drive;
+    float        mute_gain = 1.f; // glides to 0 when muted (no click)
     const char* tape_name = nullptr; // sample loaded onto the tape (label)
     float       grain_l[kMaxBlock];  // this block's grain output
     float       grain_r[kMaxBlock];
@@ -212,6 +215,8 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
         tr.cloud.SetParams(count, p.grain_size, p.spray, p.spread, int(p.envelope + 0.5f), rate,
                            powf(2.f, p.grain_pitch / 12.f)); // grains-only pitch
         tr.filter.SetParams(p.cutoff, p.reso);
+        tr.chorus.SetParams(p.chorus_rate, p.chorus_mix);
+        tr.drive.SetParams(p.drive, p.drive_tone);
         any_send |= p.rev_mix > 0.0005f;
 
         // ---- 3. Grains: the whole block in one go (before the head moves) ----
@@ -304,7 +309,16 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
                 }
                 tr.tape.Advance();
             }
+            // Per-track FX chain: filter → chorus → drive (then reverb send)
             tr.filter.Process(l, r);
+            tr.chorus.Process(l, r);
+            tr.drive.Process(l, r);
+
+            // Mute (SHIFT + track button): ~4 ms glide, the track keeps
+            // running underneath so it comes back in time
+            tr.mute_gain += 0.005f * ((controls.muted(t) ? 0.f : 1.f) - tr.mute_gain);
+            l *= tr.mute_gain;
+            r *= tr.mute_gain;
 
             const float send = tr.params.rev_mix;
             mix_l += l * (1.f - send);
@@ -365,6 +379,8 @@ void setup()
         tracks[t].tape.Init(tape_frames[t], kTapeFrames);
         tracks[t].cloud.Init(sample_rate, &envelopes);
         tracks[t].filter.Init(sample_rate);
+        tracks[t].chorus.Init(sample_rate);
+        tracks[t].drive.Init(sample_rate);
     }
     reverb_bus.Init(sample_rate, &reverb);
     metronome.Init(sample_rate);
@@ -431,6 +447,9 @@ void loop()
         s.metro_beat    = metro_beat;
         s.metro_enabled = controls.metronome_on();
         s.grain_size_mode = controls.grain_size_mode();
+        s.muted         = controls.muted(sel);
+        s.other_muted   = controls.muted(1 - sel);
+        s.chorus_phase  = tr.chorus.Phase();
         s.tape_name     = tr.tape_name;
         s.load_name     = loading_track == sel ? loading_name : nullptr;
         s.load_progress = loading_track == sel ? load_progress : -1.f;

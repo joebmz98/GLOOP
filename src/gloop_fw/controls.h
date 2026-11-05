@@ -13,6 +13,8 @@
 //   LOOP / GRAINS / FX buttons : choose which page the 4 encoders edit
 //   GRAINS again (on GRAINS)   : alt layer on/off: encoder 1 = grain SIZE,
 //                                encoder 3 = grain PITCH (labels inverted)
+//   FX again (on FX)           : FX page 2: DRIVE, TONE, CHORUS RATE, MIX
+//   SHIFT + T1 / T2            : mute / unmute that track
 //   Encoder turn               : edit that page's parameter (selected track)
 //   SHIFT + turn               : fine adjust (×0.1), or the alternate
 //                                parameter where one exists:
@@ -99,9 +101,9 @@ class Controls
         for(int i = 0; i < kNumPages; i++)
             if(page_btn_[i].RisingEdge())
             {
-                // GRAINS pressed again while on GRAINS: encoder 1 switches
-                // between the grain count and grain SIZE
-                if(Page(i) == Page::Grains && page_ == Page::Grains && !browser.IsOpen())
+                // GRAINS or FX pressed again on its own page: alt layer
+                // (GRAINS: SIZE / grain PITCH; FX: drive and chorus)
+                if(Page(i) == page_ && Page(i) != Page::Loop && !browser.IsOpen())
                     grain_size_mode_ = !grain_size_mode_;
                 else if(Page(i) != page_)
                     grain_size_mode_ = false;
@@ -111,11 +113,17 @@ class Controls
 
         shift_held_ = shift_.Pressed();
 
-        // 3. Track buttons: select → (on LOOP) open browser → close browser
+        // 3. Track buttons: select → (on LOOP) open browser → close browser.
+        //    SHIFT + track button: mute / unmute that track.
         for(int t = 0; t < kNumTracks; t++)
         {
             if(!track_[t].RisingEdge())
                 continue;
+            if(shift_held_)
+            {
+                muted_[t] = !muted_[t];
+                continue;
+            }
             if(browser.IsOpen())
                 browser.Close();
             else if(selected_track_ != t)
@@ -151,8 +159,8 @@ class Controls
         for(int i = 0; i < 4; i++)
         {
             const ParamDesc* alt = shift_held_ ? ShiftParam(page_, i) : nullptr;
-            if(grain_size_mode_ && page_ == Page::Grains && GrainsAltParam(i))
-                alt = GrainsAltParam(i); // alt layer: SIZE (enc 1), PITCH (enc 3)
+            if(grain_size_mode_ && AltParam(page_, i))
+                alt = AltParam(page_, i); // page's alt layer
             const ParamDesc& d   = alt ? *alt : kPageParams[int(page_)][i];
             float&           v   = p.*(d.field);
             int              inc = enc_[i].Increment();
@@ -226,7 +234,8 @@ class Controls
     bool shift() const { return shift_held_; }
     int  selected_track() const { return selected_track_; }
     bool metronome_on() const { return metronome_on_; }
-    bool grain_size_mode() const { return grain_size_mode_; }
+    bool grain_size_mode() const { return grain_size_mode_; } // page alt layer
+    bool muted(int t) const { return muted_[t]; }
 
     // Length of one 8th note in samples
     float Eighth(float bpm) const { return 60.f / bpm * 0.5f * sr_; }
@@ -273,7 +282,8 @@ class Controls
     bool           shift_held_     = false;
     float          sr_             = 48000.f;
     bool           metronome_on_   = true;
-    bool           grain_size_mode_ = false; // GRAINS pressed twice
+    bool           grain_size_mode_ = false; // page button pressed twice
+    bool           muted_[kNumTracks] = {false, false};
 };
 
 } // namespace gloop

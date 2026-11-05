@@ -812,8 +812,79 @@ void Ui::DrawGrains(const UiState& s)
 // =============================================================================
 // FX: filter response (left) | reverb rings (right)
 // =============================================================================
+// Same soft clip as Drive::Clip in fx.h (kept here so the UI needn't pull in
+// the audio headers)
+static inline float DriveClip(float x)
+{
+    if(x > 3.f)
+        return 1.f;
+    if(x < -3.f)
+        return -1.f;
+    const float x2 = x * x;
+    return x * (27.f + x2) / (27.f + 9.f * x2);
+}
+
+// FX page 2 (FX pressed again): drive transfer curve | chorus LFOs
+static void DrawFxPage2(Gfx& g, const UiState& s, uint32_t frame)
+{
+    const Params& p = *s.params;
+    (void)frame;
+
+    // ---- Drive: the clipping curve at the current amount ----------------------
+    g.Chip(1, 13, "DRIVE", Gfx::kSmall);
+    const int cx = 44, cy = 54, half = 26; // a square plot, x/y in -1..1
+    g.HLine(cx - half, cx + half, cy, D);
+    g.VLine(cx, cy - half, cy + half, D);
+    g.Line(cx - half, cy + half, cx + half, cy - half, D, 2); // clean (y = x)
+    const float drive  = 1.f + p.drive * p.drive * 40.f;
+    const float norm   = 1.f / DriveClip(drive); // shape, scaled to the plot
+    int         prev   = 0;
+    for(int x = -half; x <= half; x++)
+    {
+        float in  = float(x) / half;
+        float out = p.drive < 0.005f ? in : DriveClip(in * drive) * norm;
+        out       = out > 1.f ? 1.f : (out < -1.f ? -1.f : out);
+        int y     = cy - int(out * half);
+        if(x > -half)
+            g.Line(cx + x - 1, prev, cx + x, y, W);
+        prev = y;
+    }
+    // Tone: a small brightness bar under the curve (dark → bright)
+    g.Rect(cx - half, cy + half + 3, 2 * half + 1, 4, M);
+    g.FillRect(cx - half + 1, cy + half + 4, int((2 * half - 1) * p.drive_tone), 2, L);
+
+    g.VLine(89, kBodyTop, kBodyBot, D, false); // divider
+
+    // ---- Chorus: the two delay sweeps (L and R, a quarter cycle apart) --------
+    g.Chip(92, 13, "CHORUS", Gfx::kSmall);
+    const int x0 = 98, w = 40, top = 26, bot = 82;
+    const float amp = 4.f + 12.f * p.chorus_mix; // taller when mixed in more
+    for(int ch = 0; ch < 2; ch++)
+    {
+        const int   mid  = ch == 0 ? top + 14 : bot - 14;
+        const float off  = ch == 0 ? 0.f : 0.25f;
+        int         prv  = mid;
+        for(int x = 0; x < w; x++)
+        {
+            float ph = s.chorus_phase + off + float(x) / w; // scrolls with the LFO
+            ph -= floorf(ph);
+            const float tri = 4.f * fabsf(ph - 0.5f) - 1.f;
+            const int   y   = mid - int(tri * amp);
+            if(x > 0)
+                g.Line(x0 + x - 1, prv, x0 + x, y, p.chorus_mix > 0.001f ? W : M);
+            prv = y;
+        }
+        g.Text(x0 - 6, mid - 3, ch == 0 ? "L" : "R", M, Gfx::kSmall);
+    }
+}
+
 void Ui::DrawFx(const UiState& s)
 {
+    if(s.grain_size_mode)
+    {
+        DrawFxPage2(g_, s, frame_);
+        return;
+    }
     const Params& p = *s.params;
 
     // ---- Filter -----------------------------------------------------------------
@@ -898,8 +969,8 @@ void Ui::DrawReadouts(const UiState& s)
     for(int i = 0; i < 4; i++)
     {
         const ParamDesc* alt = s.shift ? ShiftParam(s.page, i) : nullptr;
-        if(s.grain_size_mode && s.page == Page::Grains && GrainsAltParam(i))
-            alt = GrainsAltParam(i); // alt layer: SIZE (enc 1), PITCH (enc 3)
+        if(s.grain_size_mode && AltParam(s.page, i))
+            alt = AltParam(s.page, i); // page's alt layer
         const ParamDesc& d   = alt ? *alt : kPageParams[int(s.page)][i];
         float            v   = s.params->*(d.field);
         int              x   = 2 + (i % 2) * 70;
@@ -1004,8 +1075,9 @@ void Ui::DrawFooter(const UiState& s)
 // [T1] chip: filled when the track is selected, outlined until then
 void Ui::DrawTrackChip(const UiState& s)
 {
-    g_.FillRect(0, 0, 13, 11, W);
-    g_.Text(1, 2, s.track == 1 ? "T2" : "T1", B, Gfx::kBig);
+    // Muted (SHIFT + track button): dark chip with dim text
+    g_.FillRect(0, 0, 13, 11, s.muted ? D : W);
+    g_.Text(1, 2, s.track == 1 ? "T2" : "T1", s.muted ? L : B, Gfx::kBig);
 }
 
 // Footer, bottom left: what the OTHER track is doing, so you can see both
@@ -1017,6 +1089,8 @@ void Ui::DrawOtherTrack(const UiState& s)
     const TapeLoop& t = *s.other_tape;
     const int       x = 2, y = kFootLine + 3;
     g_.Text(x, y, s.track == 1 ? "T1" : "T2", M, Gfx::kSmall);
+    if(s.other_muted) // "M" chip after the state glyph
+        g_.Chip(x + 16, kFootLine + 1, "M", Gfx::kSmall);
     const int gx = x + 10, gy = y + 2;
     const bool on = (frame_ / 8) % 2 == 0;
     if(t.IsRecording())

@@ -51,6 +51,23 @@ const ParamDesc* GrainsAltParam(int encoder)
     return nullptr;
 }
 
+// FX page 2: drive (distortion) and chorus
+static const ParamDesc kFxAlt[4] = {
+    {"DRIVE", &Params::drive, 0.f, 1.f, 0.01f, 0.f, false, false, Format::Percent},
+    {"TONE", &Params::drive_tone, 0.f, 1.f, 0.01f, 0.6f, false, false, Format::Percent},
+    {"CH.RATE", &Params::chorus_rate, 0.f, 1.f, 0.01f, 0.3f, false, false, Format::LfoHz},
+    {"CH.MIX", &Params::chorus_mix, 0.f, 1.f, 0.01f, 0.f, false, false, Format::Percent},
+};
+
+const ParamDesc* AltParam(Page page, int encoder)
+{
+    if(page == Page::Grains)
+        return GrainsAltParam(encoder);
+    if(page == Page::Fx)
+        return &kFxAlt[encoder];
+    return nullptr;
+}
+
 const ParamDesc* ShiftParam(Page page, int encoder)
 {
     if(page == Page::Grains && encoder == 0)
@@ -154,6 +171,13 @@ void FormatValue(const ParamDesc& d,
             Append(out, p, n, "ST");
             break;
         case Format::Int: AppendInt(out, p, n, (int)lroundf(v)); break;
+        case Format::LfoHz:
+        {
+            const float hz = 0.05f * powf(200.f, v);
+            p = AppendFixed(out, p, n, hz, hz < 10.f ? 1 : 0);
+            Append(out, p, n, "HZ");
+            break;
+        }
         case Format::Eighths:
             p = AppendInt(out, p, n, (int)lroundf(v));
             Append(out, p, n, "/8");
