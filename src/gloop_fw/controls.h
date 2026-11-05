@@ -4,21 +4,29 @@
 // Called once per audio block (1 kHz at 48 samples / 48 kHz), the rate the
 // DaisyDuino Encoder/Switch debouncing expects.
 //
+// Everything acts on the SELECTED track (T1 or T2):
+//
+//   T1 / T2 (track buttons)    : 1st press selects that track; pressed again
+//                                on the LOOP page it opens the sample browser
+//                                for that track (from another page it jumps to
+//                                LOOP first)
 //   LOOP / GRAINS / FX buttons : choose which page the 4 encoders edit
-//   Encoder turn               : edit that page's parameter
+//   Encoder turn               : edit that page's parameter (selected track)
 //   SHIFT + turn               : fine adjust (×0.1), or the alternate
 //                                parameter where one exists
 //                                (GRAINS page, encoder 1 → grain SIZE)
 //   Encoder push               : reset that parameter to its default
-//   REC                        : start a new take / finish it (→ plays)
-//   PLAY                       : play / stop (also finishes a take)
-//   T1 / T2 (track buttons)    : 1st press selects that track; pressed again
-//                                on the LOOP page it opens the sample browser
-//                                (from another page it jumps to LOOP first).
-//                                T2 only selects for now: there is no second
-//                                track engine yet.
+//   REC                        : ARM: recording starts when input arrives.
+//                                Again while armed: cancel. While recording:
+//                                finish the take (→ it loops)
+//   SHIFT + REC                : start recording immediately (no waiting)
+//   PLAY                       : play / stop (also finishes a take, or
+//                                cancels an armed track)
 //   While the browser is open  : any encoder turn moves, any push selects,
 //                                a track button or a page button closes it
+//
+// Reverb SIZE is shared by both tracks (one reverb), so editing it on either
+// track updates both. Every other parameter is per track.
 // =============================================================================
 #pragma once
 #include <cmath>
@@ -30,6 +38,8 @@
 
 namespace gloop
 {
+static constexpr int kNumTracks = 2;
+
 class Controls
 {
   public:
@@ -54,7 +64,8 @@ class Controls
         track_[1].Init(update_rate, true, pins::kBtnTrack2, INPUT_PULLUP);
     }
 
-    void Process(Params& p, TapeLoop& tape, Browser& browser)
+    // params / tapes: one pointer per track
+    void Process(Params* const* params, TapeLoop* const* tapes, Browser& browser)
     {
         // 1. Debounce all inputs
         for(auto& e : enc_)
@@ -78,20 +89,22 @@ class Controls
         shift_held_ = shift_.Pressed();
 
         // 3. Track buttons: select → (on LOOP) open browser → close browser
-        for(int t = 0; t < kNumTrackButtons; t++)
+        for(int t = 0; t < kNumTracks; t++)
         {
             if(!track_[t].RisingEdge())
                 continue;
-            const bool has_engine = t == 0; // only T1 has a track for now
             if(browser.IsOpen())
                 browser.Close();
             else if(selected_track_ != t)
                 selected_track_ = t;
             else if(page_ != Page::Loop)
                 page_ = Page::Loop;
-            else if(has_engine)
-                browser.Open();
+            else
+                browser.Open(t);
         }
+
+        Params&   p    = *params[selected_track_];
+        TapeLoop& tape = *tapes[selected_track_];
 
         // 4. While the browser is open, the encoders drive it instead of the
         //    parameters: any turn moves, any push selects.
@@ -118,6 +131,7 @@ class Controls
             const ParamDesc& d   = alt ? *alt : kPageParams[int(page_)][i];
             float&           v   = p.*(d.field);
             int              inc = enc_[i].Increment();
+            const float      old = v;
 
             if(inc != 0)
             {
@@ -139,6 +153,11 @@ class Controls
             }
             if(enc_[i].RisingEdge())
                 v = d.def;
+
+            // Shared reverb SIZE: keep both tracks' copies equal
+            if(v != old && d.field == &Params::rev_size)
+                for(int t = 0; t < kNumTracks; t++)
+                    params[t]->rev_size = v;
         }
 
         Transport(tape);
@@ -149,31 +168,36 @@ class Controls
     int  selected_track() const { return selected_track_; }
 
   private:
-    // REC / PLAY work whether or not the browser is open
+    // REC / PLAY act on the selected track, browser open or not
     void Transport(TapeLoop& tape)
     {
         if(rec_.RisingEdge())
         {
             if(tape.IsRecording())
-                tape.StopRecording();
+                tape.StopRecording(); // finish the take → loops
+            else if(shift_held_)
+                tape.StartRecording(); // SHIFT + REC: record now
+            else if(tape.IsArmed())
+                tape.Disarm(); // second press: cancel
             else
-                tape.StartRecording();
+                tape.Arm(); // wait for input
         }
         if(play_.RisingEdge())
         {
             if(tape.IsRecording())
                 tape.StopRecording();
+            else if(tape.IsArmed())
+                tape.Disarm();
             else
                 tape.SetPlaying(!tape.IsPlaying());
         }
     }
 
     daisy::Encoder enc_[4];
-    static constexpr int kNumTrackButtons = 2;
-    daisy::Switch  rec_, play_, shift_, track_[kNumTrackButtons], page_btn_[kNumPages];
-    int            selected_track_ = -1; // none until T1 is first pressed
-    Page           page_       = Page::Loop;
-    bool           shift_held_ = false;
+    daisy::Switch  rec_, play_, shift_, track_[kNumTracks], page_btn_[kNumPages];
+    int            selected_track_ = 0; // T1 selected at power-up
+    Page           page_           = Page::Loop;
+    bool           shift_held_     = false;
 };
 
 } // namespace gloop

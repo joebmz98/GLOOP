@@ -13,6 +13,10 @@
 //    reads for the grains, which is where most of their time went.
 //  * 16-bit is 96 dB of range, plenty for a looper.
 //
+// Record arm: REC first ARMS the tape. It keeps a 10 ms rolling pre-roll of
+// the input and starts recording the moment the input crosses the threshold,
+// copying the pre-roll in first so the attack of the first note isn't lost.
+//
 // Region start/length are whole samples, so the grains can index with plain
 // integers. The play head is a double: at the end of a long loop a float can't
 // hold the fractional position precisely enough for clean pitch-shifting.
@@ -34,6 +38,8 @@ class TapeLoop
   public:
     static constexpr uint32_t kMinLoop = 480;               // 10 ms at 48 kHz
     static constexpr float    kToFloat = 1.f / 32768.f;     // int16 → ±1.0
+    static constexpr uint32_t kPreroll = 480;               // 10 ms kept before the trigger
+    static constexpr float    kArmThreshold = 0.02f;        // ≈ -34 dBFS input level
 
     // frames: interleaved stereo int16 buffer of 2 * capacity values
     void Init(int16_t* frames, size_t capacity)
@@ -44,9 +50,21 @@ class TapeLoop
     }
 
     // ---- Transport -----------------------------------------------------------
+    // Arm: wait for input. The current loop keeps playing until it arrives.
+    void Arm()
+    {
+        if(recording_)
+            return;
+        pre_count_ = 0;
+        pre_pos_   = 0;
+        armed_     = true;
+    }
+    void Disarm() { armed_ = false; }
+
     // Recording always starts a fresh take at the beginning of the buffer.
     void StartRecording()
     {
+        armed_     = false;
         playing_   = false;
         rec_len_   = 0;
         head_      = 0.0;
@@ -69,9 +87,31 @@ class TapeLoop
 
     void SetPlaying(bool p) { playing_ = p && rec_len_ > 0; }
 
-    // Called for every input sample; does nothing unless recording.
+    // Called for every input sample; does nothing unless armed or recording.
     inline void Write(float l, float r)
     {
+        if(armed_)
+        {
+            // Keep the last 10 ms of input in a small ring
+            pre_[2 * pre_pos_]     = ToInt16(l);
+            pre_[2 * pre_pos_ + 1] = ToInt16(r);
+            pre_pos_               = pre_pos_ + 1 < kPreroll ? pre_pos_ + 1 : 0;
+            if(pre_count_ < kPreroll)
+                pre_count_++;
+            if(fabsf(l) < kArmThreshold && fabsf(r) < kArmThreshold)
+                return;
+            // Triggered: start the take with the pre-roll (this sample included)
+            StartRecording();
+            uint32_t from = (pre_pos_ + kPreroll - pre_count_) % kPreroll;
+            for(uint32_t k = 0; k < pre_count_; k++)
+            {
+                uint32_t j            = (from + k) % kPreroll;
+                buf_[2 * rec_len_]     = pre_[2 * j];
+                buf_[2 * rec_len_ + 1] = pre_[2 * j + 1];
+                rec_len_++;
+            }
+            return;
+        }
         if(!recording_)
             return;
         buf_[2 * rec_len_]     = ToInt16(l);
@@ -143,6 +183,7 @@ class TapeLoop
 
     // ---- State for the grains and the UI ------------------------------------
     bool     IsRecording() const { return recording_; }
+    bool     IsArmed() const { return armed_; }
     bool     IsPlaying() const { return playing_; }
     bool     HasLoop() const { return rec_len_ > 0 && !recording_; }
     double   Head() const { return head_; }               // offset in region
@@ -190,6 +231,10 @@ class TapeLoop
     float             xfade_   = 0.f;
     float             rate_    = 1.f;
     volatile bool     recording_     = false;
+    volatile bool     armed_         = false;
+    int16_t           pre_[2 * kPreroll];   // pre-roll ring (internal RAM)
+    uint32_t          pre_pos_       = 0;
+    uint32_t          pre_count_     = 0;
     volatile bool     playing_       = false;
     volatile bool     just_finished_ = false;
 };

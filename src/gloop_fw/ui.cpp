@@ -48,12 +48,13 @@ void Ui::Init(St7789* display, const EnvelopeTable* env)
     g_.Init(display->Framebuffer(), St7789::kWidth, St7789::kHeight, 2);
 }
 
-void Ui::BuildOverview(const TapeLoop& tape)
+void Ui::BuildOverview(const TapeLoop& tape, int track)
 {
+    float* overview = overview_[track];
     size_t n = tape.RecordedLength();
     if(n == 0)
     {
-        has_overview_ = false;
+        has_overview_[track] = false;
         return;
     }
     size_t       col_sz   = n / kOverviewCols;
@@ -64,12 +65,12 @@ void Ui::BuildOverview(const TapeLoop& tape)
         float peak = 0.f;
         for(size_t i = c * col_sz; i < (c + 1) * col_sz; i += stride)
             peak = fmaxf(peak, tape.FramePeak(i));
-        overview_[c] = peak;
+        overview[c] = peak;
         peak_all     = fmaxf(peak_all, peak);
     }
-    for(auto& v : overview_)
-        v /= peak_all; // normalise so quiet takes are still visible
-    has_overview_ = true;
+    for(int c = 0; c < kOverviewCols; c++)
+        overview[c] /= peak_all; // normalise so quiet takes are still visible
+    has_overview_[track] = true;
 }
 
 // =============================================================================
@@ -108,7 +109,14 @@ void Ui::DrawHeader(const UiState& s)
 
     const TapeLoop& t  = *s.tape;
     const bool      on = (frame_ / 8) % 2 == 0;
-    if(t.IsRecording())
+    if(t.IsArmed())
+    {
+        // Armed: "ARM" with a hollow record dot, blinking, waiting for input
+        const int x = kSW - 27;
+        g_.Circle(x + 4, 5, 2, on ? W : M);
+        g_.TextRight(kSW - 2, 2, "ARM", on ? W : M, Gfx::kBig);
+    }
+    else if(t.IsRecording())
     {
         // Blinking inverted REC chip with a dot
         const int x = kSW - 27;
@@ -188,7 +196,14 @@ void Ui::DrawLoop(const UiState& s)
     const int lx = ox + 8, ly = oy + 3, lw = 70, lh = 33;
     g_.FillRoundRect(lx, ly, lw, lh, W);
     // The label shows the loaded sample's name (11 characters fit)
-    char label[12] = "GLOOP A";
+    char label[12];
+    {
+        const char* def = s.track == 1 ? "GLOOP B" : "GLOOP A";
+        int         n   = 0;
+        for(; def[n]; n++)
+            label[n] = def[n];
+        label[n] = 0;
+    }
     if(s.tape_name)
     {
         int n = 0;
@@ -264,14 +279,34 @@ void Ui::DrawLoop(const UiState& s)
         g_.FillRect(x0 + 2, mid - 1, w - 4, 3, D);
         g_.FillRect(x0 + 2, mid - 1, int((w - 4) * phase) + 1, 3, W);
     }
-    else if(t.HasLoop() && has_overview_)
+    else if(t.IsArmed())
+    {
+        // Waiting for input: live input meter on a -60..0 dB scale, with the
+        // trigger threshold marked. The bar turns white once it would trigger.
+        if((frame_ / 8) % 2 == 0)
+            g_.TextCentered(68, top, "WAITING FOR INPUT", L, Gfx::kSmall);
+        auto db_pos = [](float lin) {
+            float db = 20.f * log10f(fmaxf(lin, 1e-4f)); // -80..0
+            float p  = (db + 60.f) / 60.f;
+            return p < 0.f ? 0.f : (p > 1.f ? 1.f : p);
+        };
+        const int my = mid + 1, mh = 5;
+        g_.Rect(x0, my, w, mh, M);
+        g_.FillRect(x0 + 1, my + 1, w - 2, mh - 2, D);
+        const bool  over = s.input_peak >= TapeLoop::kArmThreshold;
+        const int   fill = int((w - 2) * db_pos(s.input_peak));
+        g_.FillRect(x0 + 1, my + 1, fill, mh - 2, over ? W : L);
+        const int tx = x0 + 1 + int((w - 2) * db_pos(TapeLoop::kArmThreshold));
+        g_.VLine(tx, my - 2, my + mh + 1, W); // threshold marker
+    }
+    else if(t.HasLoop() && has_overview_[s.track])
     {
         float rs = t.RegionStart() / total;
         float re = (t.RegionStart() + t.RegionLength()) / total;
         for(int x = 0; x < w; x += 2)
         {
             float f  = (x + 0.5f) / w;
-            int   h  = 1 + int(overview_[int(f * kOverviewCols)] * 5.f);
+            int   h  = 1 + int(overview_[s.track][int(f * kOverviewCols)] * 5.f);
             bool  in = f >= rs && f <= re;
             g_.VLine(x0 + x, mid - h, mid + h, in ? L : D); // loop light, rest dark
         }
@@ -884,7 +919,10 @@ void Ui::DrawFooter(const UiState& s)
 
     // Hold SHIFT to see the audio CPU load: peak (last second) on the left,
     // average on the right. Inverted when the safety valve is limiting grains.
-    if(s.shift)
+    // Otherwise the bottom left shows what the other track is doing.
+    if(!s.shift)
+        DrawOtherTrack(s);
+    else
     {
         char buf[12];
         auto pct = [&buf](const char* tag, float v) {
@@ -923,21 +961,30 @@ void Ui::DrawFooter(const UiState& s)
 // [T1] chip: filled when the track is selected, outlined until then
 void Ui::DrawTrackChip(const UiState& s)
 {
-    if(s.t2_selected)
-    {
-        g_.FillRect(0, 0, 13, 11, W);
-        g_.Text(1, 2, "T2", B, Gfx::kBig);
-    }
-    else if(s.track_selected)
-    {
-        g_.FillRect(0, 0, 13, 11, W);
-        g_.Text(1, 2, "T1", B, Gfx::kBig);
-    }
-    else
-    {
-        g_.Rect(0, 0, 13, 11, M);
-        g_.Text(1, 2, "T1", L, Gfx::kBig);
-    }
+    g_.FillRect(0, 0, 13, 11, W);
+    g_.Text(1, 2, s.track == 1 ? "T2" : "T1", B, Gfx::kBig);
+}
+
+// Footer, bottom left: what the OTHER track is doing, so you can see both
+// tracks at a glance (e.g. "T2" + play triangle)
+void Ui::DrawOtherTrack(const UiState& s)
+{
+    if(!s.other_tape)
+        return;
+    const TapeLoop& t = *s.other_tape;
+    const int       x = 2, y = kFootLine + 3;
+    g_.Text(x, y, s.track == 1 ? "T1" : "T2", M, Gfx::kSmall);
+    const int gx = x + 10, gy = y + 2;
+    const bool on = (frame_ / 8) % 2 == 0;
+    if(t.IsRecording())
+        g_.FillCircle(gx + 2, gy, 2, on ? W : M);
+    else if(t.IsArmed())
+        g_.Circle(gx + 2, gy, 2, on ? W : M);
+    else if(t.IsPlaying())
+        for(int i = 0; i < 3; i++)
+            g_.VLine(gx + i, gy - 2 + i, gy + 2 - i, L);
+    else if(t.HasLoop())
+        g_.FillRect(gx, gy - 2, 4, 4, M);
 }
 
 void Ui::DrawMask(const char* const* rows, int h, int x, int y, uint16_t c)
@@ -1132,7 +1179,7 @@ void Ui::DrawBrowserInfo(const Browser& b)
         cell(0, "FILES", a);
         cell(1, "TOTAL", n ? c : "-");
         cell(2, "SOURCE", f == 0 ? "BUILT IN" : "SD CARD");
-        cell(3, "LOADS TO", "T1");
+        cell(3, "LOADS TO", b.track() == 1 ? "T2" : "T1");
     }
     else if(b.cursor() == 0)
     {
@@ -1146,7 +1193,7 @@ void Ui::DrawBrowserInfo(const Browser& b)
         cell(0, "LENGTH", a);
         cell(1, "CHANNELS", smp.stereo ? "STEREO" : "MONO");
         cell(2, "FITS TAPE", smp.seconds <= 60.f ? "YES" : "TRIMMED");
-        cell(3, "LOADS TO", "T1");
+        cell(3, "LOADS TO", b.track() == 1 ? "T2" : "T1");
     }
 }
 
@@ -1157,7 +1204,7 @@ void Ui::DrawBrowserHints(const Browser& b)
     const char* push = "OPEN";
     if(b.level() == Browser::kFolder)
         push = b.cursor() == 0 ? "BACK" : "LOAD";
-    const char* keys[3]    = {"TURN", "PUSH", "T1"};
+    const char* keys[3]    = {"TURN", "PUSH", b.track() == 1 ? "T2" : "T1"};
     const char* actions[3] = {"MOVE", push, "EXIT"};
     int         total      = 0;
     for(int i = 0; i < 3; i++)

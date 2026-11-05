@@ -31,8 +31,9 @@ struct UiState
 
     // Sample browser / loading
     const Browser* browser        = nullptr; // menu shown when open
-    bool           track_selected = true;    // T1 chip filled when selected
-    bool           t2_selected    = false;   // T2 pressed: chip reads T2
+    int             track      = 0;       // selected track: 0 = T1, 1 = T2
+    const TapeLoop* other_tape = nullptr; // the other track (footer status)
+    float           input_peak = 0.f;     // input level (record-arm meter)
     const char*    tape_name      = nullptr; // sample on the tape (label)
     const char*    load_name      = nullptr; // sample being loaded
     float          load_progress  = -1.f;    // 0..1 while loading, else <0
@@ -46,7 +47,7 @@ class Ui
 
     // Scan the recording once (after a take finishes) into peak columns for
     // the waveform strip, so the strip never has to read SDRAM per frame.
-    void BuildOverview(const TapeLoop& tape);
+    void BuildOverview(const TapeLoop& tape, int track);
 
   private:
     void DrawHeader(const UiState& s);
@@ -91,6 +92,7 @@ class Ui
     void DrawMask(const char* const* rows, int h, int x, int y, uint16_t c);
     void DrawLoading(const UiState& s);
     void DrawTrackChip(const UiState& s);
+    void DrawOtherTrack(const UiState& s);
 
     // Tiny envelope curve used in place of the shape's name
     void DrawEnvGlyph(int right, int y, int shape, int w, int h);
@@ -100,8 +102,8 @@ class Ui
     Gfx                  g_;
     St7789*              display_                 = nullptr;
     const EnvelopeTable* env_                     = nullptr;
-    float                overview_[kOverviewCols] = {};
-    bool                 has_overview_            = false;
+    float                overview_[2][kOverviewCols] = {};
+    bool                 has_overview_[2]            = {false, false};
     float                reel_angle_              = 0.f;
     uint32_t             frame_                   = 0;
     CatState             cat_state_               = kSleeping;

@@ -1,21 +1,26 @@
 // =============================================================================
-// fx.h — filter + reverb
+// fx.h — per-track filter + one shared reverb
 //
-// Chain: stereo state-variable low-pass → ReverbSc (dry/wet).
+// Signal flow (2 tracks):
 //
-//  * CUTOFF is mapped exponentially (40 Hz × 450^x ≈ 40 Hz..18 kHz) so the
-//    knob feels even across octaves, and smoothed so steps from the encoder
-//    don't zipper.
-//  * RESO is capped below self-oscillation.
-//  * ReverbSc's feedback is SIZE. The reverb runs all the time, even at 0 %
-//    mix, so tails don't cut off when you turn MIX down.
+//   track 1 ─ SVF LP ─┬─ x(1 - MIX1) ─────────────────┐
+//                     └─ x MIX1 ──┐                    │
+//   track 2 ─ SVF LP ─┬─ x(1 - MIX2) ─────────────────┤
+//                     └─ x MIX2 ──┴─ ReverbSc ─ wet ───┴─► out
+//
+//  * TrackFilter: stereo state-variable low-pass. CUTOFF is exponential
+//    (40 Hz × 450^x ≈ 40 Hz..18 kHz) and smoothed so encoder steps don't
+//    zipper. RESO is capped below self-oscillation.
+//  * ReverbBus: ONE ReverbSc shared by both tracks (it's one of the most
+//    expensive things in GLOOP). Each track's MIX is its send level; SIZE is
+//    shared. When every send is 0 the reverb is fed silence for 4 s so its
+//    tail dies away, then skipped until a MIX comes back up.
 //  * ReverbSc's delay lines are large, so the object lives in SDRAM.
 // =============================================================================
 #pragma once
 #include <cmath>
 #include <cstdint>
 #include "DaisyDuino.h"
-
 
 // Audio hot path: compiled for speed (-O2) even when the sketch is built
 // with "Smallest (-Os)" to fit the Seed's 128 KB internal flash.
@@ -24,25 +29,21 @@
 
 namespace gloop
 {
-class FxChain
+class TrackFilter
 {
   public:
-    void Init(float sample_rate, daisysp::ReverbSc* reverb)
+    void Init(float sample_rate)
     {
-        reverb_ = reverb;
-        reverb_->Init(sample_rate);
-        reverb_->SetLpFreq(10000.f);
         for(auto& f : svf_)
         {
             f.Init(sample_rate);
             f.SetDrive(0.f);
         }
         cutoff_hz_ = 18000.f;
-        idle_limit_ = uint32_t(sample_rate * 4.f); // longest tail at max SIZE
     }
 
     // Block rate
-    void SetParams(float cutoff01, float reso, float size, float mix)
+    void SetParams(float cutoff01, float reso)
     {
         float target = 40.f * powf(450.f, cutoff01);
         cutoff_hz_ += (target - cutoff_hz_) * 0.15f; // one-pole smoothing
@@ -51,47 +52,63 @@ class FxChain
             f.SetFreq(cutoff_hz_);
             f.SetRes(reso * 0.9f);
         }
-        reverb_->SetFeedback(0.6f + size * 0.37f);
-        mix_ = mix;
     }
 
     // Per sample, in place
-    //
-    // The reverb is one of the most expensive things in GLOOP, so it switches
-    // itself off when MIX is at 0: it is fed silence for 4 s (so its tail dies
-    // away and its delay lines end up empty), then skipped entirely until MIX
-    // comes back up. Turning MIX up again starts from a clean, silent reverb.
     inline void Process(float& l, float& r)
     {
         svf_[0].Process(l);
         svf_[1].Process(r);
         l = svf_[0].Low();
         r = svf_[1].Low();
+    }
 
-        if(mix_ > 0.0005f)
-        {
+  private:
+    daisysp::Svf svf_[2];
+    float        cutoff_hz_ = 18000.f;
+};
+
+class ReverbBus
+{
+  public:
+    void Init(float sample_rate, daisysp::ReverbSc* reverb)
+    {
+        reverb_ = reverb;
+        reverb_->Init(sample_rate);
+        reverb_->SetLpFreq(10000.f);
+        idle_limit_ = uint32_t(sample_rate * 4.f); // longest tail at max SIZE
+        idle_       = idle_limit_;
+    }
+
+    // Block rate. any_send: is any track's MIX above zero?
+    void SetParams(float size, bool any_send)
+    {
+        reverb_->SetFeedback(0.6f + size * 0.37f);
+        any_send_ = any_send;
+    }
+
+    // Per sample: send in, wet out
+    inline void Process(float in_l, float in_r, float& wet_l, float& wet_r)
+    {
+        if(any_send_)
             idle_ = 0;
-            float wl, wr;
-            reverb_->Process(l, r, &wl, &wr);
-            l = l * (1.f - mix_) + wl * mix_;
-            r = r * (1.f - mix_) + wr * mix_;
-        }
         else if(idle_ < idle_limit_)
         {
             idle_++;
-            float wl, wr;
-            reverb_->Process(0.f, 0.f, &wl, &wr); // let the tail drain
+            in_l = in_r = 0.f; // let the tail drain
         }
+        else
+        {
+            wet_l = wet_r = 0.f; // fully idle: skip the reverb
+            return;
+        }
+        reverb_->Process(in_l, in_r, &wet_l, &wet_r);
     }
 
-    bool ReverbActive() const { return idle_ < idle_limit_; }
-
   private:
-    daisysp::Svf       svf_[2];
-    daisysp::ReverbSc* reverb_    = nullptr;
-    float              cutoff_hz_ = 18000.f;
-    float              mix_       = 0.f;
-    uint32_t           idle_      = 0;
+    daisysp::ReverbSc* reverb_     = nullptr;
+    bool               any_send_   = false;
+    uint32_t           idle_       = 0;
     uint32_t           idle_limit_ = 192000;
 };
 

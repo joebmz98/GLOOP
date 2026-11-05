@@ -1,5 +1,5 @@
 // =============================================================================
-// GLOOP — granular looper prototype, 1 track, Daisy Seed (Arduino IDE)
+// GLOOP — 2-track granular looper, Daisy Seed (Arduino IDE)
 //
 // Board setup (Arduino IDE):
 //   Board manager URL : https://github.com/stm32duino/BoardManagerFiles/raw/main/package_stmicroelectronics_index.json
@@ -7,30 +7,32 @@
 //   Board part number : Daisy Seed
 //   Upload method     : STM32CubeProgrammer (DFU)
 //   USB support       : None   (CDC adds ~12 KB of flash)
-//   Optimize          : Faster (-O2) with LTO (fits at ~79%; also speeds up
-//                       the reverb/filter inside DaisyDuino). "Smallest (-Os)"
-//                       also works: GLOOP's own audio code switches itself to
-//                       -O2 with #pragma. Faster/Fastest WITHOUT LTO overflows.
+//   Optimize          : Faster (-O2) with LTO (also speeds up the reverb/filter
+//                       inside DaisyDuino). "Smallest (-Os)" also works:
+//                       GLOOP's own audio code switches itself to -O2 with
+//                       #pragma. Faster/Fastest WITHOUT LTO overflows.
 //   Library           : DaisyDuino (Library Manager)
 //
 // Two threads of execution:
 //
 //   AUDIO CALLBACK (interrupt, every 48 samples = 1 ms)
-//     1. read controls → params / transport
-//     2. push params into the engine (block rate)
-//     3. per sample: record → tape or grains → filter → reverb → out
+//     1. read controls → params / transport (selected track)
+//     2. push each track's params into its engine (block rate)
+//     3. grains for each track, a whole block at a time
+//     4. per sample: record/arm → tape playback → filter → mix + reverb → out
 //
 //   loop()  (whatever time is left)
-//     - when a take finishes, rebuild the waveform overview
+//     - when a take finishes, rebuild that track's waveform overview
 //     - every ~33 ms: draw the screen and send it to the display
 //
 // Signal flow:
 //
-//   IN ──┬──────────────────────────────────────────────┐ (monitor)
-//        └─► TapeLoop (record) ─► play head ─┬─ GRAINS=0 ─► tape read ─┐
-//                                            └─ GRAINS>0 ─► GrainCloud ┤
-//                                                                      ▼
-//                                                    SVF LP ─► ReverbSc ─► + ─► OUT
+//   IN ──┬────────────────────────────────────────────────────────┐ (monitor)
+//        ├─► Track 1: tape (arm/record) ─► tape or grains ─► SVF ─┤─┐
+//        └─► Track 2: tape (arm/record) ─► tape or grains ─► SVF ─┤ │ MIX sends
+//                                                                  │ └► ReverbSc
+//                                                                  ▼      │
+//                                                       + ─► limiter ─► OUT
 // =============================================================================
 #include "DaisyDuino.h"
 
@@ -49,26 +51,38 @@ using namespace gloop;
 
 // ---- Memory placement --------------------------------------------------------
 // LOOP LENGTH LIMIT per track. A take stops recording (and starts looping) when
-// it reaches this. 30 s of 16-bit stereo = 5.8 MB of the 64 MB SDRAM, so two
-// tracks plus a sample bank fit with plenty to spare. Loop length does not
-// affect CPU load — only the number of grains does.
+// it reaches this. 30 s of 16-bit stereo = 5.8 MB per track of the 64 MB SDRAM.
+// Loop length does not affect CPU load — only the number of grains does.
 static constexpr size_t kSampleRate     = 48000;
 static constexpr size_t kMaxLoopSeconds = 30;
 static constexpr size_t kTapeFrames     = kSampleRate * kMaxLoopSeconds;
 static constexpr size_t kBlockSize      = 48; // DaisyDuino default
 static constexpr size_t kMaxBlock       = 64; // scratch buffers' size
 
-static int16_t DSY_SDRAM_BSS            tape_frames[kTapeFrames * 2]; // L R L R
+static int16_t DSY_SDRAM_BSS tape_frames[kNumTracks][kTapeFrames * 2]; // L R L R
 static daisysp::ReverbSc DSY_SDRAM_BSS reverb;
+
+// ---- One track ------------------------------------------------------------------
+struct Track
+{
+    Params      params;
+    TapeLoop    tape;
+    GrainCloud  cloud;
+    TrackFilter filter;
+    const char* tape_name = nullptr; // sample loaded onto the tape (label)
+    float       grain_l[kMaxBlock];  // this block's grain output
+    float       grain_r[kMaxBlock];
+};
 
 // ---- Objects -------------------------------------------------------------------
 static DaisyHardware hw;
 static float         sample_rate;
-static Params        params;
-static TapeLoop      tape;
+static Track         tracks[kNumTracks];
+// The controls edit each track's params and tape through these
+static Params*       track_params[kNumTracks] = {&tracks[0].params, &tracks[1].params};
+static TapeLoop*     track_tapes[kNumTracks]  = {&tracks[0].tape, &tracks[1].tape};
 static EnvelopeTable envelopes;
-static GrainCloud    cloud;
-static FxChain       fx;
+static ReverbBus     reverb_bus;
 static Controls      controls;
 static St7789        display;
 static Ui            ui;
@@ -76,11 +90,14 @@ static CpuMeter      cpu;
 static SampleLibrary library;
 static Browser       browser;
 
+// Input level for the record-arm meter (peak of the last block)
+static volatile float input_peak = 0.f;
+
 // Sample loading (run from loop(), never from the audio callback)
-static const char* tape_name    = nullptr; // what's on the tape now
-static const char* loading_name = nullptr; // what's being loaded
-static uint32_t    load_start   = 0;
-static uint32_t      last_frame = 0;
+static const char* loading_name  = nullptr; // what's being loaded
+static int         loading_track = 0;
+static uint32_t    load_start    = 0;
+static uint32_t    last_frame    = 0;
 
 // ---- CPU safety valve ----------------------------------------------------------
 // If the audio callback gets close to its time budget, stop starting new grains
@@ -105,76 +122,95 @@ static inline float OutputLimit(float x)
     const float a = fabsf(x);
     if(a <= t)
         return x;
-    const float over = (a - t) / (1.f - t);  // 0.. as it goes past the knee
+    const float over = (a - t) / (1.f - t); // 0.. as it goes past the knee
     const float y    = t + (1.f - t) * over / (1.f + over); // → 1.0, never past
     return x < 0.f ? -y : y;
 }
 
-static float grain_l[kMaxBlock], grain_r[kMaxBlock];
 // Compiled for speed even under "Smallest (-Os)" (see the board settings above)
 __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size_t size)
 {
     cpu.BlockStart();
+    if(size > kMaxBlock)
+        size = kMaxBlock;
 
     // ---- 0. CPU safety valve (uses the previous block's measurement) ----
     if(!throttled && (cpu.Avg() > kThrottleOn || cpu.Last() > kThrottleHot))
         throttled = true;
     else if(throttled && cpu.Avg() < kThrottleOff)
         throttled = false;
-    cloud.SetThrottle(throttled);
 
-    // ---- 1. Controls (1 kHz) ----
-    controls.Process(params, tape, browser);
+    // ---- 1. Controls (1 kHz), acting on the selected track ----
+    controls.Process(track_params, track_tapes, browser);
 
-    // ---- 2. Block-rate engine updates ----
-    const float rate = powf(2.f, params.pitch / 12.f); // varispeed
+    // ---- 2. Block-rate engine updates, per track ----
+    bool any_send = false;
+    bool grain_mode[kNumTracks];
+    bool playing[kNumTracks];
+    for(int t = 0; t < kNumTracks; t++)
+    {
+        Track&        tr   = tracks[t];
+        const Params& p    = tr.params;
+        const float   rate = powf(2.f, p.pitch / 12.f); // varispeed
 
-    tape.SetRegion(params.start, params.length, params.xfade, sample_rate);
-    tape.SetRate(rate);
+        tr.tape.SetRegion(p.start, p.length, p.xfade, sample_rate);
+        tr.tape.SetRate(rate);
 
-    const int  grain_count = int(params.grains + 0.5f);
-    const bool grain_mode  = grain_count > 0;
-    cloud.SetParams(grain_count,
-                    params.grain_size,
-                    params.spray,
-                    params.spread,
-                    int(params.envelope + 0.5f),
-                    rate);
+        const int count = int(p.grains + 0.5f);
+        grain_mode[t]   = count > 0;
+        playing[t]      = tr.tape.IsPlaying();
+        tr.cloud.SetThrottle(throttled);
+        tr.cloud.SetParams(count, p.grain_size, p.spray, p.spread, int(p.envelope + 0.5f), rate);
+        tr.filter.SetParams(p.cutoff, p.reso);
+        any_send |= p.rev_mix > 0.0005f;
 
-    fx.SetParams(params.cutoff, params.reso, params.rev_size, params.rev_mix);
+        // ---- 3. Grains: the whole block in one go (before the head moves) ----
+        for(size_t i = 0; i < size; i++)
+            tr.grain_l[i] = tr.grain_r[i] = 0.f;
+        if(playing[t] && grain_mode[t])
+            tr.cloud.ProcessBlock(tr.tape, tr.grain_l, tr.grain_r, size);
+    }
+    reverb_bus.SetParams(tracks[0].params.rev_size, any_send); // SIZE is shared
 
-    if(size > kMaxBlock)
-        size = kMaxBlock;
-
-    // ---- 3. Grains: the whole block in one go (before the head moves) ----
-    const bool playing = tape.IsPlaying();
-    for(size_t i = 0; i < size; i++)
-        grain_l[i] = grain_r[i] = 0.f;
-    if(playing && grain_mode)
-        cloud.ProcessBlock(tape, grain_l, grain_r, size);
-
-    // ---- 4. Per sample: record, tape playback, FX, output ----
+    // ---- 4. Per sample: record, tape playback, filter, mix, reverb, out ----
+    float in_pk = 0.f;
     for(size_t i = 0; i < size; i++)
     {
         const float in_l = in[0][i];
         const float in_r = in[1][i];
+        in_pk            = fmaxf(in_pk, fmaxf(fabsf(in_l), fabsf(in_r)));
 
-        tape.Write(in_l, in_r); // no-op unless recording
-
-        float l = grain_l[i], r = grain_r[i];
-        if(playing)
+        float mix_l = 0.f, mix_r = 0.f;   // dry track mix
+        float send_l = 0.f, send_r = 0.f; // into the reverb
+        for(int t = 0; t < kNumTracks; t++)
         {
-            if(!grain_mode)
-                tape.ReadTape(l, r);
-            tape.Advance();
+            Track& tr = tracks[t];
+            tr.tape.Write(in_l, in_r); // no-op unless armed or recording
+
+            float l = tr.grain_l[i], r = tr.grain_r[i];
+            if(playing[t])
+            {
+                if(!grain_mode[t])
+                    tr.tape.ReadTape(l, r);
+                tr.tape.Advance();
+            }
+            tr.filter.Process(l, r);
+
+            const float send = tr.params.rev_mix;
+            mix_l += l * (1.f - send);
+            mix_r += r * (1.f - send);
+            send_l += l * send;
+            send_r += r * send;
         }
 
-        fx.Process(l, r);
+        float wet_l, wet_r;
+        reverb_bus.Process(send_l, send_r, wet_l, wet_r);
 
         // Input is monitored dry so you can hear what you're recording
-        out[0][i] = OutputLimit(l + in_l);
-        out[1][i] = OutputLimit(r + in_r);
+        out[0][i] = OutputLimit(mix_l + wet_l + in_l);
+        out[1][i] = OutputLimit(mix_r + wet_r + in_r);
     }
+    input_peak = in_pk;
 
     cpu.BlockEnd();
 }
@@ -193,9 +229,13 @@ void setup()
 
     envelopes.Init();
     browser.Init(&library);
-    tape.Init(tape_frames, kTapeFrames);
-    cloud.Init(sample_rate, &envelopes);
-    fx.Init(sample_rate, &reverb);
+    for(int t = 0; t < kNumTracks; t++)
+    {
+        tracks[t].tape.Init(tape_frames[t], kTapeFrames);
+        tracks[t].cloud.Init(sample_rate, &envelopes);
+        tracks[t].filter.Init(sample_rate);
+    }
+    reverb_bus.Init(sample_rate, &reverb);
     controls.Init(sample_rate / kBlockSize); // controls run once per block
 
     display.Init();
@@ -209,8 +249,12 @@ void loop()
 {
     digitalWrite(LED_BUILTIN, (millis() / 500) % 2); // heartbeat
 
-    if(tape.ConsumeJustFinished())
-        ui.BuildOverview(tape);
+    for(int t = 0; t < kNumTracks; t++)
+        if(tracks[t].tape.ConsumeJustFinished())
+        {
+            tracks[t].tape_name = nullptr; // a fresh recording, not a sample
+            ui.BuildOverview(tracks[t].tape, t);
+        }
 
     const uint32_t now = millis();
 
@@ -219,11 +263,12 @@ void loop()
     // label. The SD version opens the WAV with FatFS here and streams it into
     // the track's tape buffer a chunk per loop() pass (playback paused),
     // driving the progress bar from bytes read.
-    int folder, index;
-    if(browser.ConsumeLoadRequest(folder, index))
+    int folder, index, track;
+    if(browser.ConsumeLoadRequest(folder, index, track))
     {
-        loading_name = library.Sample(folder, index).name;
-        load_start   = now;
+        loading_name  = library.Sample(folder, index).name;
+        loading_track = track;
+        load_start    = now;
     }
     float load_progress = -1.f;
     if(loading_name)
@@ -231,25 +276,28 @@ void loop()
         load_progress = float(now - load_start) / 900.f;
         if(load_progress >= 1.f)
         {
-            tape_name     = loading_name;
-            loading_name  = nullptr;
-            load_progress = -1.f;
+            tracks[loading_track].tape_name = loading_name;
+            loading_name                    = nullptr;
+            load_progress                   = -1.f;
         }
     }
 
     if(now - last_frame >= 33) // ~30 fps target
     {
-        last_frame = now;
-        UiState s{controls.page(), controls.shift(), &params, &tape, &cloud, sample_rate};
-        s.cpu_avg   = cpu.Avg();
-        s.cpu_peak  = cpu.Peak();
-        s.throttled = throttled;
-        s.browser        = &browser;
-        s.track_selected = controls.selected_track() == 0;
-        s.t2_selected    = controls.selected_track() == 1;
-        s.tape_name      = tape_name;
-        s.load_name      = loading_name;
-        s.load_progress  = load_progress;
+        last_frame   = now;
+        const int sel = controls.selected_track();
+        Track&    tr  = tracks[sel];
+        UiState   s{controls.page(), controls.shift(), &tr.params, &tr.tape, &tr.cloud, sample_rate};
+        s.cpu_avg       = cpu.Avg();
+        s.cpu_peak      = cpu.Peak();
+        s.throttled     = throttled;
+        s.browser       = &browser;
+        s.track         = sel;
+        s.other_tape    = &tracks[1 - sel].tape;
+        s.input_peak    = input_peak;
+        s.tape_name     = tr.tape_name;
+        s.load_name     = loading_track == sel ? loading_name : nullptr;
+        s.load_progress = loading_track == sel ? load_progress : -1.f;
         ui.Draw(s);
         display.Flush();
     }

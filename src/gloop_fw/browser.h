@@ -1,8 +1,8 @@
 // =============================================================================
 // browser.h — the sample browser (state + navigation) and the sample library
 //
-// Opening it:  press the track button to select the track, then press it
-//              again while on the LOOP page.
+// Opening it:  press a track button (T1/T2) to select that track, then press
+//              it again while on the LOOP page. Samples load into that track.
 // In the menu: turn ANY encoder to move, push ANY encoder to open / choose.
 //              SHIFT + turn jumps 5 rows. The track button closes the menu,
 //              as does pressing a page button.
@@ -90,8 +90,10 @@ class Browser
     void Init(const SampleLibrary* lib) { lib_ = lib; }
 
     bool IsOpen() const { return open_; }
-    void Open()
+    // track: which track the chosen sample will load into
+    void Open(int track)
     {
+        track_ = track;
         open_  = true;
         level_ = kRoot;
         // Start on the folder used last time
@@ -136,19 +138,21 @@ class Browser
         {
             req_folder_ = folder_;
             req_index_  = cursor_ - 1;
+            req_track_  = track_;
             request_    = true;
             open_       = false;
         }
     }
 
     // loop() picks the request up once
-    bool ConsumeLoadRequest(int& folder, int& index)
+    bool ConsumeLoadRequest(int& folder, int& index, int& track)
     {
         if(!request_)
             return false;
         request_ = false;
         folder   = req_folder_;
         index    = req_index_;
+        track    = req_track_;
         return true;
     }
 
@@ -157,6 +161,7 @@ class Browser
     int                  cursor() const { return cursor_; }
     int                  scroll() const { return scroll_; }
     int                  folder() const { return folder_; }
+    int                  track() const { return track_; }
     int                  Items() const { return level_ == kRoot ? SampleLibrary::kFolders : 1 + lib_->Count(folder_); }
     const SampleLibrary* library() const { return lib_; }
 
@@ -178,7 +183,8 @@ class Browser
     int                  scroll_     = 0;
     int                  folder_     = 0;
     volatile bool        request_    = false;
-    int                  req_folder_ = 0, req_index_ = 0;
+    int                  req_folder_ = 0, req_index_ = 0, req_track_ = 0;
+    int                  track_      = 0;
 };
 
 } // namespace gloop
