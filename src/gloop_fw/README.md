@@ -63,7 +63,8 @@ Everything acts on the **selected track** (T1 or T2, shown in the header chip). 
 - **REC arms** the track: it waits for input and starts recording when the input crosses about -34 dBFS, keeping the 10 ms before the trigger so the first attack isn't lost. The screen shows ARM and a live input meter with the trigger level marked. REC again cancels.
 - **SHIFT + REC** records immediately, without waiting.
 - While recording, REC or PLAY closes the loop and plays it. A take stops by itself at **30 s** (`kMaxLoopSeconds`).
-- PLAY toggles play/stop (or cancels an armed track).
+- **PLAY is global:** it stops both tracks if either is playing, otherwise starts both from their loop start points, in sync. If the selected track is recording, PLAY finishes the take instead.
+- **When a take finishes** (REC, PLAY or the 30 s limit): if the other track is already playing, the new loop **joins in** straight away; if nothing was playing, both tracks start together from their loop start.
 - SHIFT + turn = fine adjust (or the alternate parameter). Push an encoder to reset its parameter.
 - Reverb **SIZE** is shared by both tracks (one reverb); each track's **MIX** is its send into it. Every other parameter is per track.
 - Hold SHIFT to show CPU load (peak / average) in the footer.

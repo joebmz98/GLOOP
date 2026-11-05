@@ -143,7 +143,26 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
     // ---- 1. Controls (1 kHz), acting on the selected track ----
     controls.Process(track_params, track_tapes, browser);
 
+    // ---- 1b. A take just finished (REC, PLAY or the 30 s limit) ----
+    // The new loop is already playing from its start. If the other track is
+    // playing it simply joins in; if nothing else was playing, every track
+    // with a loop starts from its loop start together with it.
+    for(int t = 0; t < kNumTracks; t++)
+    {
+        if(!tracks[t].tape.ConsumeTakeDone())
+            continue;
+        bool others_playing = false;
+        for(int o = 0; o < kNumTracks; o++)
+            if(o != t)
+                others_playing |= tracks[o].tape.IsPlaying();
+        if(!others_playing)
+            for(int o = 0; o < kNumTracks; o++)
+                if(o != t)
+                    tracks[o].tape.Restart();
+    }
+
     // ---- 2. Block-rate engine updates, per track ----
+    static bool was_playing[kNumTracks] = {false, false};
     bool any_send = false;
     bool grain_mode[kNumTracks];
     bool playing[kNumTracks];
@@ -159,6 +178,9 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
         const int count = int(p.grains + 0.5f);
         grain_mode[t]   = count > 0;
         playing[t]      = tr.tape.IsPlaying();
+        if(playing[t] && !was_playing[t])
+            tr.cloud.Reset(); // (re)started: begin with a fresh grain cloud
+        was_playing[t] = playing[t];
         tr.cloud.SetThrottle(throttled);
         tr.cloud.SetParams(count, p.grain_size, p.spray, p.spread, int(p.envelope + 0.5f), rate);
         tr.filter.SetParams(p.cutoff, p.reso);

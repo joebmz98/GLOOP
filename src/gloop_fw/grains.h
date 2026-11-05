@@ -176,6 +176,14 @@ class GrainCloud
 
     const Grain* Grains() const { return grains_; }
 
+    // Forget all grains (on a restart, so nothing resumes from old positions)
+    void Reset()
+    {
+        for(auto& g : grains_)
+            g.active = false;
+        spawn_timer_ = 0.f;
+    }
+
     // CPU safety valve: while set, no NEW grains start. Grains already playing
     // finish normally, so the cloud thins out smoothly instead of clicking.
     void SetThrottle(bool on) { throttle_ = on; }

@@ -81,11 +81,20 @@ class TapeLoop
             return;
         }
         head_          = 0.0;
-        playing_       = true;
+        playing_       = true; // a finished take plays straight away
         just_finished_ = true; // tells the UI to rebuild its waveform overview
+        take_done_     = true; // tells the transport (audio side)
     }
 
-    void SetPlaying(bool p) { playing_ = p && rec_len_ > 0; }
+    void SetPlaying(bool p) { playing_ = p && rec_len_ > 0 && !recording_; }
+
+    // Play from the start of the loop region (if there is a loop)
+    void Restart()
+    {
+        head_    = 0.0;
+        playing_ = rec_len_ > 0 && !recording_;
+    }
+    void Stop() { playing_ = false; }
 
     // Called for every input sample; does nothing unless armed or recording.
     inline void Write(float l, float r)
@@ -203,6 +212,14 @@ class TapeLoop
         return float(a > b ? a : b) * kToFloat;
     }
 
+    // True once after a take finishes — read by the audio callback's transport
+    bool ConsumeTakeDone()
+    {
+        bool f     = take_done_;
+        take_done_ = false;
+        return f;
+    }
+
     // True once after a take finishes (consumed by the main loop)
     bool ConsumeJustFinished()
     {
@@ -237,6 +254,7 @@ class TapeLoop
     uint32_t          pre_count_     = 0;
     volatile bool     playing_       = false;
     volatile bool     just_finished_ = false;
+    volatile bool     take_done_     = false;
 };
 
 } // namespace gloop

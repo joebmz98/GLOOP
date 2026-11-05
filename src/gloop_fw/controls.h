@@ -20,8 +20,14 @@
 //                                Again while armed: cancel. While recording:
 //                                finish the take (→ it loops)
 //   SHIFT + REC                : start recording immediately (no waiting)
-//   PLAY                       : play / stop (also finishes a take, or
-//                                cancels an armed track)
+//   PLAY                       : BOTH tracks: stop if either is playing,
+//                                otherwise start both from their loop start
+//                                (in sync). If the selected track is
+//                                recording, PLAY finishes the take instead.
+//   Finishing a take (REC or PLAY): if the other track is already playing,
+//                                the new loop joins in straight away; if
+//                                nothing is playing, both start together from
+//                                their loop start (see gloop_fw.ino).
 //   While the browser is open  : any encoder turn moves, any push selects,
 //                                a track button or a page button closes it
 //
@@ -120,7 +126,7 @@ class Controls
             browser.Turn(steps, shift_held_);
             if(pushed)
                 browser.Push();
-            Transport(tape);
+            Transport(tape, tapes);
             return;
         }
 
@@ -160,7 +166,7 @@ class Controls
                     params[t]->rev_size = v;
         }
 
-        Transport(tape);
+        Transport(tape, tapes);
     }
 
     Page page() const { return page_; }
@@ -168,8 +174,9 @@ class Controls
     int  selected_track() const { return selected_track_; }
 
   private:
-    // REC / PLAY act on the selected track, browser open or not
-    void Transport(TapeLoop& tape)
+    // REC acts on the selected track; PLAY on both. Works with the browser
+    // open too.
+    void Transport(TapeLoop& tape, TapeLoop* const* tapes)
     {
         if(rec_.RisingEdge())
         {
@@ -184,12 +191,18 @@ class Controls
         }
         if(play_.RisingEdge())
         {
+            bool any_playing = false;
+            for(int t = 0; t < kNumTracks; t++)
+                any_playing |= tapes[t]->IsPlaying();
+
             if(tape.IsRecording())
-                tape.StopRecording();
-            else if(tape.IsArmed())
-                tape.Disarm();
+                tape.StopRecording(); // joins in / starts all: gloop_fw.ino
+            else if(any_playing)
+                for(int t = 0; t < kNumTracks; t++)
+                    tapes[t]->Stop();
             else
-                tape.SetPlaying(!tape.IsPlaying());
+                for(int t = 0; t < kNumTracks; t++)
+                    tapes[t]->Restart(); // from the loop start, in sync
         }
     }
 
