@@ -19,7 +19,7 @@ struct Params
     float xfade  = 0.02f; // 0..0.25 s crossfade across the loop seam
 
     // GRAINS page
-    float grains     = 0.f;   // 0 = plain tape playback, 1..24 overlapping grains
+    float grains     = 0.f;   // 0 = plain tape playback, 1..12 overlapping grains
     float spray      = 0.1f;  // 0..1 position randomness around the play head
     float spread     = 0.3f;  // 0..1 stereo randomness
     float envelope   = 0.f;   // 0..9 grain window shape (Quanta-style list)

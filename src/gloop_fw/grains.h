@@ -15,13 +15,26 @@
 //
 // The source is summed to mono per grain and then panned; that is what makes
 // SPREAD audible as a widening cloud even on a mono recording.
+//
+// PERFORMANCE — this is the most expensive code in GLOOP, so:
+//   * It runs a whole audio block at a time, one grain after another, rather
+//     than all grains once per sample. Each grain's state stays in CPU
+//     registers for the whole block and there is one function call per block
+//     instead of 48.
+//   * Positions are a whole-sample index (uint32) plus a float fraction, so
+//     stepping and wrapping are plain integer ops (no double maths).
+//   * The tape is int16 stereo interleaved: one 32-bit read gets L and R.
+//   * Gains include the int16→float scale and the level normalisation, so the
+//     inner loop has no extra multiplies.
+//   * New grains can start part-way through a block (`delay`), so timing is
+//     still sample-accurate.
 // =============================================================================
 #pragma once
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include "envelopes.h"
 #include "tape_loop.h"
-
 
 // Audio hot path: compiled for speed (-O2) even when the sketch is built
 // with "Smallest (-Os)" to fit the Seed's 128 KB internal flash.
@@ -32,27 +45,33 @@ namespace gloop
 {
 struct Grain
 {
-    bool    active    = false;
-    double  pos       = 0.0; // offset inside the loop region (samples)
-    float   inc       = 1.f; // playback rate
-    float   phase     = 0.f; // 0..1 through the grain's life
-    float   phase_inc = 0.f; // 1 / duration_in_samples
-    float   gain_l    = 0.f;
-    float   gain_r    = 0.f;
-    float   pan       = 0.f; // -1..+1 (kept for the UI)
-    uint8_t env       = 0;   // envelope shape index
+    bool     active    = false;
+    uint32_t pos_i     = 0;   // whole-sample position inside the loop region
+    float    pos_f     = 0.f; // fractional part, 0..1
+    uint32_t inc_i     = 1;   // playback rate, whole part
+    float    inc_f     = 0.f; // playback rate, fractional part
+    float    phase     = 0.f; // 0..1 through the grain's life
+    float    phase_inc = 0.f; // 1 / duration_in_samples
+    float    gain_l    = 0.f; // pan x level x int16 scale
+    float    gain_r    = 0.f;
+    float    pan       = 0.f; // -1..+1 (kept for the UI)
+    uint8_t  env       = 0;   // envelope shape index
+    uint16_t delay     = 0;   // samples to wait before starting (this block)
 };
 
 class GrainCloud
 {
   public:
-    static constexpr int kMaxGrains = 24;
+    // VOICE LIMIT per track. Cost grows with the number of overlapping grains,
+    // so this is the main CPU control. 12 per track keeps two tracks plus FX
+    // well inside the budget (see performance-budget.md).
+    static constexpr int kMaxGrains = 12;
 
     void Init(float sample_rate, const EnvelopeTable* env)
     {
-        sr_   = sample_rate;
-        env_  = env;
-        rng_  = 0x1234567u;
+        sr_  = sample_rate;
+        env_ = env;
+        rng_ = 0x1234567u;
         for(auto& g : grains_)
             g.active = false;
     }
@@ -66,65 +85,93 @@ class GrainCloud
         spread_   = spread;
         env_sel_  = env;
         rate_     = rate;
-        // Overlapping grains add up; 1/sqrt(N) keeps the perceived level
-        // roughly constant for uncorrelated grains.
-        norm_ = count_ > 0 ? 1.4f / sqrtf(float(count_)) : 0.f;
+        // Level: overlapping grains add up. Partly-correlated grains (low
+        // SPRAY) add up faster than 1/sqrt(N) assumes, so use N^0.65, tuned so
+        // a full-scale recording stays below full scale at every grain count.
+        norm_ = count_ > 0 ? 0.75f / powf(float(count_), 0.65f) : 0.f;
     }
 
-    // Per-sample: adds the cloud's output into l/r
-    inline void Process(const TapeLoop& tape, float& l, float& r)
+    // Adds the cloud's output for one block into out_l / out_r.
+    // Call BEFORE the tape head is advanced for this block.
+    void ProcessBlock(const TapeLoop& tape, float* out_l, float* out_r, size_t n)
     {
+        // ---- 1. Schedule this block's new grains (sample-accurate) ----------
         if(count_ > 0)
         {
-            spawn_timer_ -= 1.f;
-            if(spawn_timer_ <= 0.f)
+            const float interval = size_smp_ / float(count_);
+            while(spawn_timer_ < float(n))
             {
-                Spawn(tape);
-                spawn_timer_ += size_smp_ / float(count_);
+                Spawn(tape, uint16_t(spawn_timer_));
+                spawn_timer_ += interval;
             }
+            spawn_timer_ -= float(n);
         }
+        else
+            spawn_timer_ = 0.f;
 
-        // Hot loop — runs (active grains x 48,000) times a second, so it is
-        // kept lean:
-        //  * The loop region always lies inside the recording
-        //    (start + length <= recorded length) and every grain keeps
-        //    0 <= pos < length, so start + pos is always a valid index. No
-        //    per-read wrap-around checks are needed.
-        //  * Left and right are read with the same index and fraction, and
-        //    summed to mono BEFORE interpolating (one lerp instead of two).
-        float          sum_l = 0.f, sum_r = 0.f;
-        const double   len   = tape.RegionLength();
-        const double   start = tape.RegionStart();
+        // ---- 2. Render every active grain across the block -------------------
+        const uint32_t len   = tape.RegionLength();
+        const uint32_t start = tape.RegionStart();
         const uint32_t last  = uint32_t(tape.RecordedLength()) - 1;
-        const float*   bl    = tape.Channel(0);
-        const float*   br    = tape.Channel(1);
+        const int16_t* fr    = tape.Frames();
+
         for(auto& g : grains_)
         {
             if(!g.active)
                 continue;
-            if(g.pos >= len) // region was shortened under this grain
-                g.pos = fmod(g.pos, len);
+            if(g.pos_i >= len) // region was shortened under this grain
+                g.pos_i %= len;
 
-            const double   idx = start + g.pos;
-            const uint32_t i0  = uint32_t(idx);
-            const uint32_t i1  = i0 < last ? i0 + 1 : 0;
-            const float    f   = float(idx - double(i0));
-            const float    a   = bl[i0] + br[i0];
-            const float    s   = 0.5f * (a + f * ((bl[i1] + br[i1]) - a));
+            // Copy state into locals so it lives in registers for the loop
+            uint32_t       pi = g.pos_i, ii = g.inc_i;
+            float          pf = g.pos_f, fi = g.inc_f;
+            float          ph = g.phase, dph = g.phase_inc;
+            const float    gl = g.gain_l, gr = g.gain_r;
+            const float*   et = env_->Table(g.env);
+            size_t         i  = g.delay;
+            g.delay           = 0;
 
-            const float amp = env_->Lookup(g.env, g.phase);
-            sum_l += s * amp * g.gain_l;
-            sum_r += s * amp * g.gain_r;
+            for(; i < n; i++)
+            {
+                // Tape read: region start + pos is always inside the recording
+                const uint32_t a  = start + pi;
+                const uint32_t b  = a < last ? a + 1 : 0;
+                const float    s0 = float(fr[2 * a] + fr[2 * a + 1]);
+                const float    s1 = float(fr[2 * b] + fr[2 * b + 1]);
+                const float    s  = s0 + pf * (s1 - s0);
 
-            g.pos += g.inc;
-            if(g.pos >= len)
-                g.pos -= len;
-            g.phase += g.phase_inc;
-            if(g.phase >= 1.f)
-                g.active = false;
+                // Envelope (phase < 1, so idx <= 255 and idx + 1 is valid)
+                const float    x   = ph * float(EnvelopeTable::kSize);
+                const uint32_t idx = uint32_t(x);
+                const float    e0  = et[idx];
+                const float    amp = e0 + (x - float(idx)) * (et[idx + 1] - e0);
+
+                const float v = s * amp;
+                out_l[i] += v * gl;
+                out_r[i] += v * gr;
+
+                // Step position (integer + fraction) and wrap in the region
+                pf += fi;
+                if(pf >= 1.f)
+                {
+                    pf -= 1.f;
+                    pi++;
+                }
+                pi += ii;
+                if(pi >= len)
+                    pi -= len;
+
+                ph += dph;
+                if(ph >= 1.f)
+                {
+                    g.active = false;
+                    break;
+                }
+            }
+            g.pos_i = pi;
+            g.pos_f = pf;
+            g.phase = ph;
         }
-        l += sum_l * norm_;
-        r += sum_r * norm_;
     }
 
     const Grain* Grains() const { return grains_; }
@@ -136,14 +183,14 @@ class GrainCloud
     // Active grains right now (for the UI / CPU readout)
     int ActiveCount() const
     {
-        int n = 0;
+        int c = 0;
         for(const auto& g : grains_)
-            n += g.active ? 1 : 0;
-        return n;
+            c += g.active ? 1 : 0;
+        return c;
     }
 
   private:
-    void Spawn(const TapeLoop& tape)
+    void Spawn(const TapeLoop& tape, uint16_t offset)
     {
         if(throttle_)
             return; // CPU near its limit: skip this grain
@@ -157,30 +204,36 @@ class GrainCloud
         if(g == nullptr)
             return; // pool exhausted: skip this grain rather than steal one
 
-        // SPRAY: jitter of up to ±0.5 s (or half the loop if shorter)
-        float max_jitter = fminf(0.5f * sr_, tape.RegionLength() * 0.5f);
-        float jitter     = (Rand() * 2.f - 1.f) * spray_ * max_jitter;
+        const double len = double(tape.RegionLength());
 
-        double pos = tape.Head() + jitter;
-        double len = tape.RegionLength();
-        while(pos >= len)
-            pos -= len;
-        while(pos < 0.0)
+        // SPRAY: jitter of up to ±0.5 s (or half the loop if shorter)
+        const float max_jitter = fminf(0.5f * sr_, float(len) * 0.5f);
+        const float jitter     = (Rand() * 2.f - 1.f) * spray_ * max_jitter;
+
+        // Where the play head will be at this grain's start sample
+        double pos = tape.Head() + double(offset) * rate_ + jitter;
+        pos        = fmod(pos, len);
+        if(pos < 0.0)
             pos += len;
 
         // SPREAD: equal-power pan law
-        float pan   = (Rand() * 2.f - 1.f) * spread_;
-        float angle = (pan + 1.f) * 0.78539816f; // 0..pi/2
+        const float pan   = (Rand() * 2.f - 1.f) * spread_;
+        const float angle = (pan + 1.f) * 0.78539816f; // 0..pi/2
+        // Level: envelope compensation x count normalisation x int16 scale
+        // (x0.5 because L and R are summed to mono)
+        const float lvl = env_->Gain(env_sel_) * norm_ * (0.5f / 32768.f);
 
-        g->pos       = pos;
-        g->inc       = rate_;
+        g->pos_i     = uint32_t(pos);
+        g->pos_f     = float(pos - double(g->pos_i));
+        g->inc_i     = uint32_t(rate_);
+        g->inc_f     = rate_ - float(g->inc_i);
         g->phase     = 0.f;
         g->phase_inc = 1.f / fmaxf(size_smp_, 16.f);
         g->pan       = pan;
-        float lvl    = env_->Gain(env_sel_);
         g->gain_l    = cosf(angle) * lvl;
         g->gain_r    = sinf(angle) * lvl;
-        g->env       = (uint8_t)env_sel_;
+        g->env       = uint8_t(env_sel_);
+        g->delay     = offset;
         g->active    = true;
     }
 

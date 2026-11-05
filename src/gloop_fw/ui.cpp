@@ -56,8 +56,6 @@ void Ui::BuildOverview(const TapeLoop& tape)
         has_overview_ = false;
         return;
     }
-    const float* l        = tape.Channel(0);
-    const float* r        = tape.Channel(1);
     size_t       col_sz   = n / kOverviewCols;
     size_t       stride   = col_sz / 400 + 1; // ≤ ~400 reads per column
     float        peak_all = 0.0001f;
@@ -65,7 +63,7 @@ void Ui::BuildOverview(const TapeLoop& tape)
     {
         float peak = 0.f;
         for(size_t i = c * col_sz; i < (c + 1) * col_sz; i += stride)
-            peak = fmaxf(peak, fmaxf(fabsf(l[i]), fabsf(r[i])));
+            peak = fmaxf(peak, tape.FramePeak(i));
         overview_[c] = peak;
         peak_all     = fmaxf(peak_all, peak);
     }
@@ -520,7 +518,7 @@ void Ui::DrawCloud(int count, float spread)
     // so only the OUTER edge of the whole cloud gets an outline.
     const float half  = 8.f + spread * 52.f;
     const int   drift = int(sinf(frame_ * 0.02f) * 2.f);
-    const int   rows  = count >= 16 ? 3 : (count >= 6 ? 2 : 1);
+    const int   rows  = count >= 8 ? 3 : (count >= 4 ? 2 : 1);
     struct Puff
     {
         int x, y, r;

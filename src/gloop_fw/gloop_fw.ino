@@ -7,9 +7,10 @@
 //   Board part number : Daisy Seed
 //   Upload method     : STM32CubeProgrammer (DFU)
 //   USB support       : None   (CDC adds ~12 KB of flash)
-//   Optimize          : Smallest (-Os default). The audio code switches
-//                       itself to -O2 with #pragma, so it stays fast while
-//                       the whole sketch fits the Seed's 128 KB flash.
+//   Optimize          : Faster (-O2) with LTO (fits at ~79%; also speeds up
+//                       the reverb/filter inside DaisyDuino). "Smallest (-Os)"
+//                       also works: GLOOP's own audio code switches itself to
+//                       -O2 with #pragma. Faster/Fastest WITHOUT LTO overflows.
 //   Library           : DaisyDuino (Library Manager)
 //
 // Two threads of execution:
@@ -47,14 +48,17 @@
 using namespace gloop;
 
 // ---- Memory placement --------------------------------------------------------
-// 60 s of stereo float audio = 23 MB → SDRAM (64 MB, initialised by DAISY.init).
-static constexpr size_t kSampleRate = 48000;
-static constexpr size_t kMaxSeconds = 60;
-static constexpr size_t kTapeSize   = kSampleRate * kMaxSeconds;
-static constexpr size_t kBlockSize  = 48; // DaisyDuino default
+// LOOP LENGTH LIMIT per track. A take stops recording (and starts looping) when
+// it reaches this. 30 s of 16-bit stereo = 5.8 MB of the 64 MB SDRAM, so two
+// tracks plus a sample bank fit with plenty to spare. Loop length does not
+// affect CPU load — only the number of grains does.
+static constexpr size_t kSampleRate     = 48000;
+static constexpr size_t kMaxLoopSeconds = 30;
+static constexpr size_t kTapeFrames     = kSampleRate * kMaxLoopSeconds;
+static constexpr size_t kBlockSize      = 48; // DaisyDuino default
+static constexpr size_t kMaxBlock       = 64; // scratch buffers' size
 
-static float DSY_SDRAM_BSS              tape_l[kTapeSize];
-static float DSY_SDRAM_BSS              tape_r[kTapeSize];
+static int16_t DSY_SDRAM_BSS            tape_frames[kTapeFrames * 2]; // L R L R
 static daisysp::ReverbSc DSY_SDRAM_BSS reverb;
 
 // ---- Objects -------------------------------------------------------------------
@@ -91,6 +95,22 @@ static volatile bool   throttled    = false;
 // =============================================================================
 // Audio
 // =============================================================================
+
+// Output soft limiter: untouched below 0.8, then curves smoothly towards 1.0
+// instead of hard-clipping. Dense grain clouds plus the dry input can add up
+// past full scale; this keeps that from turning into harsh digital distortion.
+static inline float OutputLimit(float x)
+{
+    const float t = 0.8f;
+    const float a = fabsf(x);
+    if(a <= t)
+        return x;
+    const float over = (a - t) / (1.f - t);  // 0.. as it goes past the knee
+    const float y    = t + (1.f - t) * over / (1.f + over); // → 1.0, never past
+    return x < 0.f ? -y : y;
+}
+
+static float grain_l[kMaxBlock], grain_r[kMaxBlock];
 // Compiled for speed even under "Smallest (-Os)" (see the board settings above)
 __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size_t size)
 {
@@ -123,7 +143,17 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
 
     fx.SetParams(params.cutoff, params.reso, params.rev_size, params.rev_mix);
 
-    // ---- 3. Samples ----
+    if(size > kMaxBlock)
+        size = kMaxBlock;
+
+    // ---- 3. Grains: the whole block in one go (before the head moves) ----
+    const bool playing = tape.IsPlaying();
+    for(size_t i = 0; i < size; i++)
+        grain_l[i] = grain_r[i] = 0.f;
+    if(playing && grain_mode)
+        cloud.ProcessBlock(tape, grain_l, grain_r, size);
+
+    // ---- 4. Per sample: record, tape playback, FX, output ----
     for(size_t i = 0; i < size; i++)
     {
         const float in_l = in[0][i];
@@ -131,12 +161,10 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
 
         tape.Write(in_l, in_r); // no-op unless recording
 
-        float l = 0.f, r = 0.f;
-        if(tape.IsPlaying())
+        float l = grain_l[i], r = grain_r[i];
+        if(playing)
         {
-            if(grain_mode)
-                cloud.Process(tape, l, r);
-            else
+            if(!grain_mode)
                 tape.ReadTape(l, r);
             tape.Advance();
         }
@@ -144,8 +172,8 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
         fx.Process(l, r);
 
         // Input is monitored dry so you can hear what you're recording
-        out[0][i] = l + in_l;
-        out[1][i] = r + in_r;
+        out[0][i] = OutputLimit(l + in_l);
+        out[1][i] = OutputLimit(r + in_r);
     }
 
     cpu.BlockEnd();
@@ -165,7 +193,7 @@ void setup()
 
     envelopes.Init();
     browser.Init(&library);
-    tape.Init(tape_l, tape_r, kTapeSize);
+    tape.Init(tape_frames, kTapeFrames);
     cloud.Init(sample_rate, &envelopes);
     fx.Init(sample_rate, &reverb);
     controls.Init(sample_rate / kBlockSize); // controls run once per block

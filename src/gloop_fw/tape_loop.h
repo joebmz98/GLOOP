@@ -1,20 +1,26 @@
 // =============================================================================
 // tape_loop.h — the "tape": record buffer, loop region, play head, seam xfade
 //
-// Model: one long recording lives in SDRAM. START/LENGTH carve a region out of
-// it. A play head moves through the region at `rate` (2^(pitch/12)), which is
+// Model: one recording lives in SDRAM. START/LENGTH carve a region out of it.
+// A play head moves through the region at `rate` (2^(pitch/12)), which is
 // varispeed: pitch and speed change together, like a real tape machine.
 //
-// Positions are doubles. A 60 s buffer is 2.88 M samples; a float only has 24
-// bits of mantissa, so near the end of the buffer the fractional part (which
-// the interpolator needs) would be quantised to ~1/4 sample and pitch-shifted
-// playback would get grainy. The H750 has a double-precision FPU, so this is
-// cheap.
+// Storage: 16-bit, stereo INTERLEAVED (L0 R0 L1 R1 ...).
+//  * Half the memory of float, so twice the loop time per MB.
+//  * Left and right of the same moment sit side by side, so one cache line
+//    fetch from SDRAM serves both channels. With 16-bit samples a 32-byte cache
+//    line holds 8 stereo frames instead of 4 per channel — far fewer slow SDRAM
+//    reads for the grains, which is where most of their time went.
+//  * 16-bit is 96 dB of range, plenty for a looper.
+//
+// Region start/length are whole samples, so the grains can index with plain
+// integers. The play head is a double: at the end of a long loop a float can't
+// hold the fractional position precisely enough for clean pitch-shifting.
 // =============================================================================
 #pragma once
 #include <cmath>
 #include <cstddef>
-
+#include <cstdint>
 
 // Audio hot path: compiled for speed (-O2) even when the sketch is built
 // with "Smallest (-Os)" to fit the Seed's 128 KB internal flash.
@@ -26,12 +32,13 @@ namespace gloop
 class TapeLoop
 {
   public:
-    static constexpr float kMinLoop = 480.f; // 10 ms at 48 kHz
+    static constexpr uint32_t kMinLoop = 480;               // 10 ms at 48 kHz
+    static constexpr float    kToFloat = 1.f / 32768.f;     // int16 → ±1.0
 
-    void Init(float* left, float* right, size_t capacity)
+    // frames: interleaved stereo int16 buffer of 2 * capacity values
+    void Init(int16_t* frames, size_t capacity)
     {
-        buf_[0]  = left;
-        buf_[1]  = right;
+        buf_     = frames;
         cap_     = capacity;
         rec_len_ = 0;
     }
@@ -50,7 +57,7 @@ class TapeLoop
     void StopRecording()
     {
         recording_ = false;
-        if(rec_len_ < (size_t)kMinLoop)
+        if(rec_len_ < kMinLoop)
         {
             rec_len_ = 0; // too short, discard
             return;
@@ -67,10 +74,10 @@ class TapeLoop
     {
         if(!recording_)
             return;
-        buf_[0][rec_len_] = l;
-        buf_[1][rec_len_] = r;
+        buf_[2 * rec_len_]     = ToInt16(l);
+        buf_[2 * rec_len_ + 1] = ToInt16(r);
         if(++rec_len_ >= cap_)
-            StopRecording(); // buffer full
+            StopRecording(); // loop length limit reached
     }
 
     // ---- Region & speed (block rate) ----------------------------------------
@@ -78,12 +85,13 @@ class TapeLoop
     {
         if(rec_len_ == 0)
             return;
-        float total = float(rec_len_);
-        start_      = start01 * (total - kMinLoop);
-        len_        = kMinLoop + length01 * (total - start_ - kMinLoop);
-        xfade_      = fminf(xfade_s * sr, len_ * 0.5f);
+        const uint32_t total = rec_len_;
+        start_ = uint32_t(start01 * float(total - kMinLoop));
+        len_   = kMinLoop + uint32_t(length01 * float(total - start_ - kMinLoop));
+        // start_ + len_ <= total always holds: grains rely on it
+        xfade_ = fminf(xfade_s * sr, float(len_) * 0.5f);
         if(head_ >= len_)
-            head_ = fmod(head_, (double)len_);
+            head_ = fmod(head_, double(len_));
     }
 
     void SetRate(float r) { rate_ = r; }
@@ -102,62 +110,57 @@ class TapeLoop
     // clicking. Equal-power (sqrt) gains keep the level steady.
     inline void ReadTape(float& l, float& r) const
     {
-        double idx = start_ + head_;
-        float  fade_start = len_ - xfade_;
+        const double idx        = double(start_) + head_;
+        const float  fade_start = float(len_) - xfade_;
+        ReadAbs(idx, l, r);
         if(xfade_ > 1.f && head_ > fade_start)
         {
-            float  g    = float(head_ - fade_start) / xfade_; // 0 → 1
-            float  a    = sqrtf(1.f - g);
-            float  b    = sqrtf(g);
-            double idx2 = idx - len_; // same distance before the region start
-            l           = ReadAbs(0, idx) * a + ReadAbs(0, idx2) * b;
-            r           = ReadAbs(1, idx) * a + ReadAbs(1, idx2) * b;
-        }
-        else
-        {
-            l = ReadAbs(0, idx);
-            r = ReadAbs(1, idx);
+            const float g = float(head_ - fade_start) / xfade_; // 0 → 1
+            const float a = sqrtf(1.f - g);
+            const float b = sqrtf(g);
+            float       l2, r2;
+            ReadAbs(idx - double(len_), l2, r2); // same distance before start
+            l = l * a + l2 * b;
+            r = r * a + r2 * b;
         }
     }
 
-    // Read at an offset inside the region (wraps within the region). Grains use
-    // this so they never wander outside the loop.
-    inline float ReadRegion(int ch, double offset) const
-    {
-        while(offset >= len_)
-            offset -= len_;
-        while(offset < 0.0)
-            offset += len_;
-        return ReadAbs(ch, start_ + offset);
-    }
-
-    // Linear-interpolated read anywhere in the recording (wraps the recording).
-    inline float ReadAbs(int ch, double idx) const
+    // Linear-interpolated stereo read anywhere in the recording (wraps)
+    inline void ReadAbs(double idx, float& l, float& r) const
     {
         const double n = double(rec_len_);
-        while(idx >= n)
+        if(idx >= n)
             idx -= n;
-        while(idx < 0.0)
+        if(idx < 0.0)
             idx += n;
-        size_t i0 = (size_t)idx;
-        size_t i1 = (i0 + 1 < rec_len_) ? i0 + 1 : 0;
-        float  f  = float(idx - double(i0));
-        float  a  = buf_[ch][i0];
-        return a + f * (buf_[ch][i1] - a);
+        const uint32_t i0 = uint32_t(idx);
+        const uint32_t i1 = (i0 + 1 < rec_len_) ? i0 + 1 : 0;
+        const float    f  = float(idx - double(i0));
+        const float    l0 = buf_[2 * i0], r0 = buf_[2 * i0 + 1];
+        l = (l0 + f * (float(buf_[2 * i1]) - l0)) * kToFloat;
+        r = (r0 + f * (float(buf_[2 * i1 + 1]) - r0)) * kToFloat;
     }
 
     // ---- State for the grains and the UI ------------------------------------
-    bool   IsRecording() const { return recording_; }
-    bool   IsPlaying() const { return playing_; }
-    bool   HasLoop() const { return rec_len_ > 0 && !recording_; }
-    double Head() const { return head_; }          // offset in region
-    float  RegionLength() const { return len_; }   // samples
-    float  RegionStart() const { return start_; }  // samples
-    float  Xfade() const { return xfade_; }        // samples
-    float  Rate() const { return rate_; }
-    size_t RecordedLength() const { return rec_len_; }
-    size_t Capacity() const { return cap_; }
-    const float* Channel(int ch) const { return buf_[ch]; }
+    bool     IsRecording() const { return recording_; }
+    bool     IsPlaying() const { return playing_; }
+    bool     HasLoop() const { return rec_len_ > 0 && !recording_; }
+    double   Head() const { return head_; }               // offset in region
+    uint32_t RegionLength() const { return len_; }        // samples
+    uint32_t RegionStart() const { return start_; }       // samples
+    float    Xfade() const { return xfade_; }             // samples
+    float    Rate() const { return rate_; }
+    size_t   RecordedLength() const { return rec_len_; }
+    size_t   Capacity() const { return cap_; }
+    const int16_t* Frames() const { return buf_; }        // interleaved L R
+
+    // Peak of one stereo frame, 0..1 (for the UI's waveform overview)
+    float FramePeak(size_t i) const
+    {
+        int a = buf_[2 * i] < 0 ? -buf_[2 * i] : buf_[2 * i];
+        int b = buf_[2 * i + 1] < 0 ? -buf_[2 * i + 1] : buf_[2 * i + 1];
+        return float(a > b ? a : b) * kToFloat;
+    }
 
     // True once after a take finishes (consumed by the main loop)
     bool ConsumeJustFinished()
@@ -168,17 +171,27 @@ class TapeLoop
     }
 
   private:
-    float*        buf_[2]  = {nullptr, nullptr};
-    size_t        cap_     = 0;
-    volatile size_t rec_len_ = 0;
-    double        head_    = 0.0;
-    float         start_   = 0.f;
-    float         len_     = kMinLoop;
-    float         xfade_   = 0.f;
-    float         rate_    = 1.f;
-    volatile bool recording_     = false;
-    volatile bool playing_       = false;
-    volatile bool just_finished_ = false;
+    static inline int16_t ToInt16(float x)
+    {
+        x *= 32767.f;
+        if(x > 32767.f)
+            x = 32767.f;
+        if(x < -32768.f)
+            x = -32768.f;
+        return int16_t(lrintf(x));
+    }
+
+    int16_t*          buf_     = nullptr;
+    size_t            cap_     = 0;
+    volatile uint32_t rec_len_ = 0;
+    double            head_    = 0.0;
+    uint32_t          start_   = 0;
+    uint32_t          len_     = kMinLoop;
+    float             xfade_   = 0.f;
+    float             rate_    = 1.f;
+    volatile bool     recording_     = false;
+    volatile bool     playing_       = false;
+    volatile bool     just_finished_ = false;
 };
 
 } // namespace gloop

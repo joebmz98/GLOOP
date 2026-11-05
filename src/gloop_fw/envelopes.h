@@ -45,6 +45,10 @@ class EnvelopeTable
     // Per-shape loudness compensation, applied once when a grain is born
     inline float Gain(int shape) const { return gain_[shape]; }
 
+    // Raw table for one shape (kSize + 1 points) — the grain loop reads it
+    // directly so the shape lookup isn't repeated every sample
+    inline const float* Table(int shape) const { return table_[shape]; }
+
     // phase 0..1 across the grain's life → gain 0..1
     inline float Lookup(int shape, float phase) const
     {

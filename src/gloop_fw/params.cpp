@@ -17,7 +17,7 @@ const ParamDesc kPageParams[kNumPages][4] = {
      {"PITCH", &Params::pitch, -24.f, 24.f, 1.f, 0.f, false, false, Format::Semitones},
      {"XFADE", &Params::xfade, 0.f, 0.25f, 0.005f, 0.02f, false, false, Format::Millis}},
     // GRAINS
-    {{"GRAINS", &Params::grains, 0.f, 24.f, 1.f, 0.f, true, false, Format::Int},
+    {{"GRAINS", &Params::grains, 0.f, 12.f, 1.f, 0.f, true, false, Format::Int},
      {"SPRAY", &Params::spray, 0.f, 1.f, 0.01f, 0.1f, false, false, Format::Percent},
      {"SPREAD", &Params::spread, 0.f, 1.f, 0.01f, 0.3f, false, false, Format::Percent},
      {"ENV", &Params::envelope, 0.f, 9.f, 1.f, 0.f, true, true, Format::EnvName}},

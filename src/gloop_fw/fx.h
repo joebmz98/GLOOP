@@ -13,6 +13,7 @@
 // =============================================================================
 #pragma once
 #include <cmath>
+#include <cstdint>
 #include "DaisyDuino.h"
 
 
@@ -37,6 +38,7 @@ class FxChain
             f.SetDrive(0.f);
         }
         cutoff_hz_ = 18000.f;
+        idle_limit_ = uint32_t(sample_rate * 4.f); // longest tail at max SIZE
     }
 
     // Block rate
@@ -54,6 +56,11 @@ class FxChain
     }
 
     // Per sample, in place
+    //
+    // The reverb is one of the most expensive things in GLOOP, so it switches
+    // itself off when MIX is at 0: it is fed silence for 4 s (so its tail dies
+    // away and its delay lines end up empty), then skipped entirely until MIX
+    // comes back up. Turning MIX up again starts from a clean, silent reverb.
     inline void Process(float& l, float& r)
     {
         svf_[0].Process(l);
@@ -61,17 +68,31 @@ class FxChain
         l = svf_[0].Low();
         r = svf_[1].Low();
 
-        float wl, wr;
-        reverb_->Process(l, r, &wl, &wr);
-        l = l * (1.f - mix_) + wl * mix_;
-        r = r * (1.f - mix_) + wr * mix_;
+        if(mix_ > 0.0005f)
+        {
+            idle_ = 0;
+            float wl, wr;
+            reverb_->Process(l, r, &wl, &wr);
+            l = l * (1.f - mix_) + wl * mix_;
+            r = r * (1.f - mix_) + wr * mix_;
+        }
+        else if(idle_ < idle_limit_)
+        {
+            idle_++;
+            float wl, wr;
+            reverb_->Process(0.f, 0.f, &wl, &wr); // let the tail drain
+        }
     }
+
+    bool ReverbActive() const { return idle_ < idle_limit_; }
 
   private:
     daisysp::Svf       svf_[2];
     daisysp::ReverbSc* reverb_    = nullptr;
     float              cutoff_hz_ = 18000.f;
     float              mix_       = 0.f;
+    uint32_t           idle_      = 0;
+    uint32_t           idle_limit_ = 192000;
 };
 
 } // namespace gloop
