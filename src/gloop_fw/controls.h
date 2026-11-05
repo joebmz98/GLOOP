@@ -11,8 +11,8 @@
 //                                for that track (from another page it jumps to
 //                                LOOP first)
 //   LOOP / GRAINS / FX buttons : choose which page the 4 encoders edit
-//   GRAINS again (on GRAINS)   : encoder 1 toggles between the grain count
-//                                and grain SIZE (shown inverted)
+//   GRAINS again (on GRAINS)   : alt layer on/off: encoder 1 = grain SIZE,
+//                                encoder 3 = grain PITCH (labels inverted)
 //   Encoder turn               : edit that page's parameter (selected track)
 //   SHIFT + turn               : fine adjust (×0.1), or the alternate
 //                                parameter where one exists:
@@ -151,8 +151,8 @@ class Controls
         for(int i = 0; i < 4; i++)
         {
             const ParamDesc* alt = shift_held_ ? ShiftParam(page_, i) : nullptr;
-            if(grain_size_mode_ && page_ == Page::Grains && i == 0)
-                alt = ShiftParam(Page::Grains, 0); // grain SIZE
+            if(grain_size_mode_ && page_ == Page::Grains && GrainsAltParam(i))
+                alt = GrainsAltParam(i); // alt layer: SIZE (enc 1), PITCH (enc 3)
             const ParamDesc& d   = alt ? *alt : kPageParams[int(page_)][i];
             float&           v   = p.*(d.field);
             int              inc = enc_[i].Increment();

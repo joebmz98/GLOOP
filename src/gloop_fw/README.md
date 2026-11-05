@@ -54,7 +54,7 @@ D1–D6 are also the Seed's SD card pins: when SD loading is added, the buttons 
 | Page | Enc 1 | Enc 2 | Enc 3 | Enc 4 |
 |---|---|---|---|---|
 | LOOP | Start · SHIFT: **BPM** | Length (8th notes) · SHIFT: **free length** | Pitch (±24 st) | Crossfade |
-| GRAINS | Grains (0 = loop only, 1–12 = grains on top of the loop) · GRAINS again or SHIFT: Size | Spray | Spread | Envelope |
+| GRAINS | Grains (0 = loop only, 1–12 = grains on top of the loop) · alt: **Size** | Spray | Spread · alt: **Grain pitch** (±24 st) | Envelope |
 | FX | Cutoff | Resonance | Reverb size | Reverb mix |
 
 Everything acts on the **selected track** (T1 or T2, shown in the header chip). The footer's bottom-left shows what the other track is doing.
@@ -70,7 +70,7 @@ Everything acts on the **selected track** (T1 or T2, shown in the header chip). 
 - **LENGTH** is counted in 8th notes at that BPM (shown as e.g. `6/8`, `16/8`), so loops stay in time when the BPM changes. A new take is fitted to the most whole 8ths it holds.
 - **SHIFT + LENGTH** frees the length from the grid (shown in seconds). Turning LENGTH again without SHIFT snaps it back onto the nearest 8th.
 - **GRAINS 0** is just the loop; **1–12** layer that many grains **on top of the loop**, which keeps playing underneath. The cloud's level is matched to the loop automatically and sits about 3 dB under it, so changing GRAINS / SPRAY / ENV / SIZE doesn't jump the volume.
-- **Press GRAINS again** while on the GRAINS page to switch encoder 1 to grain **SIZE** (its label shows inverted); press again to go back to the grain count. SHIFT + encoder 1 also reaches SIZE.
+- **Press GRAINS again** while on the GRAINS page for the **alt layer**: encoder 1 = grain **SIZE**, encoder 3 = grain **PITCH** (±24 semitones, the grains only; the loop underneath keeps its own PITCH). Their labels show inverted; press GRAINS again to go back. SHIFT + encoder 1 also reaches SIZE.
 - SHIFT + turn = fine adjust (or the alternate parameter). Push an encoder to reset its parameter.
 - Reverb **SIZE** is shared by both tracks (one reverb); each track's **MIX** is its send into it. Every other parameter is per track.
 - Hold SHIFT to show CPU load (peak / average) in the footer.

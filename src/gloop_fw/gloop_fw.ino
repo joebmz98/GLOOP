@@ -209,7 +209,8 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
             tr.cloud.Reset(); // (re)started: begin with a fresh grain cloud
         was_playing[t] = playing[t];
         tr.cloud.SetThrottle(throttled);
-        tr.cloud.SetParams(count, p.grain_size, p.spray, p.spread, int(p.envelope + 0.5f), rate);
+        tr.cloud.SetParams(count, p.grain_size, p.spray, p.spread, int(p.envelope + 0.5f), rate,
+                           powf(2.f, p.grain_pitch / 12.f)); // grains-only pitch
         tr.filter.SetParams(p.cutoff, p.reso);
         any_send |= p.rev_mix > 0.0005f;
 

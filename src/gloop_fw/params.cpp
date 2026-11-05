@@ -39,6 +39,18 @@ static const ParamDesc kBpm
 static const ParamDesc kFreeLength
     = {"FREE", &Params::length, 0.f, 1.f, 0.005f, 1.f, false, false, Format::Seconds};
 
+static const ParamDesc kGrainPitch
+    = {"G.PITCH", &Params::grain_pitch, -24.f, 24.f, 1.f, 0.f, false, false, Format::Semitones};
+
+const ParamDesc* GrainsAltParam(int encoder)
+{
+    if(encoder == 0)
+        return &kGrainSize;
+    if(encoder == 2)
+        return &kGrainPitch;
+    return nullptr;
+}
+
 const ParamDesc* ShiftParam(Page page, int encoder)
 {
     if(page == Page::Grains && encoder == 0)

@@ -77,8 +77,13 @@ class GrainCloud
     }
 
     // Block-rate parameter update
-    void SetParams(int count, float size_s, float spray, float spread, int env, float rate)
+    // rate: the tape's speed (PITCH on the LOOP page) — where the play head
+    //       goes, so where new grains start
+    // grain_ratio: extra transposition of the grains only (GRAINS alt layer)
+    void SetParams(int count, float size_s, float spray, float spread, int env, float rate,
+                   float grain_ratio = 1.f)
     {
+        grain_rate_ = rate * grain_ratio;
         count_    = count < 0 ? 0 : (count > kMaxGrains ? kMaxGrains : count);
         size_smp_ = size_s * sr_;
         spray_    = spray;
@@ -234,8 +239,8 @@ class GrainCloud
 
         g->pos_i     = uint32_t(pos);
         g->pos_f     = float(pos - double(g->pos_i));
-        g->inc_i     = uint32_t(rate_);
-        g->inc_f     = rate_ - float(g->inc_i);
+        g->inc_i     = uint32_t(grain_rate_); // grains play at their own pitch
+        g->inc_f     = grain_rate_ - float(g->inc_i);
         g->phase     = 0.f;
         g->phase_inc = 1.f / fmaxf(size_smp_, 16.f);
         g->pan       = pan;
@@ -264,6 +269,7 @@ class GrainCloud
     float                spread_      = 0.f;
     int                  env_sel_     = 0;
     float                rate_        = 1.f;
+    float                grain_rate_  = 1.f;
     float                norm_        = 0.f;
     float                spawn_timer_ = 0.f;
     uint32_t             rng_         = 1;

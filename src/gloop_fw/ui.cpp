@@ -898,8 +898,8 @@ void Ui::DrawReadouts(const UiState& s)
     for(int i = 0; i < 4; i++)
     {
         const ParamDesc* alt = s.shift ? ShiftParam(s.page, i) : nullptr;
-        if(s.grain_size_mode && s.page == Page::Grains && i == 0)
-            alt = ShiftParam(Page::Grains, 0); // grain SIZE
+        if(s.grain_size_mode && s.page == Page::Grains && GrainsAltParam(i))
+            alt = GrainsAltParam(i); // alt layer: SIZE (enc 1), PITCH (enc 3)
         const ParamDesc& d   = alt ? *alt : kPageParams[int(s.page)][i];
         float            v   = s.params->*(d.field);
         int              x   = 2 + (i % 2) * 70;

@@ -28,7 +28,8 @@ struct Params
     float spray      = 0.1f;  // 0..1 position randomness around the play head
     float spread     = 0.3f;  // 0..1 stereo randomness
     float envelope   = 0.f;   // 0..9 grain window shape (Quanta-style list)
-    float grain_size = 0.08f; // 0.01..0.5 s   (SHIFT + encoder 1 on GRAINS)
+    float grain_size = 0.08f; // 0.01..0.5 s   (GRAINS alt layer, encoder 1)
+    float grain_pitch = 0.f;  // -24..+24 semitones, grains only (alt, enc 3)
 
     // FX page
     float cutoff   = 1.f;  // 0..1 → 40 Hz..18 kHz (exponential)
@@ -75,6 +76,10 @@ extern const ParamDesc kPageParams[kNumPages][4];
 // SHIFT layer: an alternate parameter for an encoder, or nullptr when SHIFT
 // just means "fine adjust" for that encoder.
 const ParamDesc* ShiftParam(Page page, int encoder);
+
+// GRAINS alt layer (GRAINS pressed again): encoder 1 = SIZE, encoder 3 =
+// grain PITCH; nullptr for encoders that keep their normal job
+const ParamDesc* GrainsAltParam(int encoder);
 
 // Envelope shape names, shared by the UI and the formatter
 extern const char* const kEnvelopeNames[10];
