@@ -11,6 +11,8 @@
 //                                for that track (from another page it jumps to
 //                                LOOP first)
 //   LOOP / GRAINS / FX buttons : choose which page the 4 encoders edit
+//   GRAINS again (on GRAINS)   : encoder 1 toggles between the grain count
+//                                and grain SIZE (shown inverted)
 //   Encoder turn               : edit that page's parameter (selected track)
 //   SHIFT + turn               : fine adjust (×0.1), or the alternate
 //                                parameter where one exists:
@@ -97,6 +99,12 @@ class Controls
         for(int i = 0; i < kNumPages; i++)
             if(page_btn_[i].RisingEdge())
             {
+                // GRAINS pressed again while on GRAINS: encoder 1 switches
+                // between the grain count and grain SIZE
+                if(Page(i) == Page::Grains && page_ == Page::Grains && !browser.IsOpen())
+                    grain_size_mode_ = !grain_size_mode_;
+                else if(Page(i) != page_)
+                    grain_size_mode_ = false;
                 page_ = Page(i);
                 browser.Close();
             }
@@ -143,6 +151,8 @@ class Controls
         for(int i = 0; i < 4; i++)
         {
             const ParamDesc* alt = shift_held_ ? ShiftParam(page_, i) : nullptr;
+            if(grain_size_mode_ && page_ == Page::Grains && i == 0)
+                alt = ShiftParam(Page::Grains, 0); // grain SIZE
             const ParamDesc& d   = alt ? *alt : kPageParams[int(page_)][i];
             float&           v   = p.*(d.field);
             int              inc = enc_[i].Increment();
@@ -216,6 +226,7 @@ class Controls
     bool shift() const { return shift_held_; }
     int  selected_track() const { return selected_track_; }
     bool metronome_on() const { return metronome_on_; }
+    bool grain_size_mode() const { return grain_size_mode_; }
 
     // Length of one 8th note in samples
     float Eighth(float bpm) const { return 60.f / bpm * 0.5f * sr_; }
@@ -262,6 +273,7 @@ class Controls
     bool           shift_held_     = false;
     float          sr_             = 48000.f;
     bool           metronome_on_   = true;
+    bool           grain_size_mode_ = false; // GRAINS pressed twice
 };
 
 } // namespace gloop

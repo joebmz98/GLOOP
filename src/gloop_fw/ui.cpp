@@ -708,7 +708,7 @@ void Ui::DrawCatActor(int count)
         case kWaking:
         case kSettling:
             // Sitting up on the bench; looks around (blinks) before moving
-            DrawCatSitting(sit_bench_x, sit_bench_y, (cat_t_ / 5) % 2, count >= 2, sway);
+            DrawCatSitting(sit_bench_x, sit_bench_y, (cat_t_ / 5) % 2, count >= 1, sway);
             break;
         case kJumpDown:
             hop(ease(cat_t_ / 12.f), sit_bench_x, sit_bench_y, sit_side_x, sit_side_y);
@@ -737,14 +737,14 @@ void Ui::DrawGrains(const UiState& s)
 {
     const Params& p       = *s.params;
     const int     count   = int(p.grains + 0.5f);
-    const bool    raining = count >= 2; // GRAINS 1 = the plain loop
+    const bool    raining = count >= 1; // GRAINS 0 = just the loop
 
     UpdateCat(raining);
 
     if(!raining)
     {
         DrawNight();
-        g_.Chip(2, 13, "TAPE MODE", Gfx::kSmall);
+        g_.Chip(2, 13, "LOOP ONLY", Gfx::kSmall);
     }
 
     DrawPavement();
@@ -898,6 +898,8 @@ void Ui::DrawReadouts(const UiState& s)
     for(int i = 0; i < 4; i++)
     {
         const ParamDesc* alt = s.shift ? ShiftParam(s.page, i) : nullptr;
+        if(s.grain_size_mode && s.page == Page::Grains && i == 0)
+            alt = ShiftParam(Page::Grains, 0); // grain SIZE
         const ParamDesc& d   = alt ? *alt : kPageParams[int(s.page)][i];
         float            v   = s.params->*(d.field);
         int              x   = 2 + (i % 2) * 70;

@@ -23,8 +23,8 @@ struct Params
     float bpm     = 120.f; // 40..240, shared by both tracks (SHIFT + START)
 
     // GRAINS page
-    float grains     = 1.f;   // 1 = plain loop (one "grain" the length of the
-                              //     loop), 2..12 overlapping grains
+    float grains     = 0.f;   // 0 = just the loop, 1..12 grains layered on
+                              //     top of the loop
     float spray      = 0.1f;  // 0..1 position randomness around the play head
     float spread     = 0.3f;  // 0..1 stereo randomness
     float envelope   = 0.f;   // 0..9 grain window shape (Quanta-style list)

@@ -200,10 +200,10 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
         tr.tape.SetRegion(p.start, p.length, p.xfade, sample_rate, len_smp);
         tr.tape.SetRate(rate);
 
-        // GRAINS 1 = the plain loop (one "grain" as long as the loop);
-        // the grain cloud takes over from 2
+        // GRAINS 0 = just the loop; 1..12 = that many grains layered ON TOP
+        // of the loop (the loop keeps playing underneath)
         const int count = int(p.grains + 0.5f);
-        grain_mode[t]   = count >= 2;
+        grain_mode[t]   = count >= 1;
         playing[t]      = tr.tape.IsPlaying();
         if(playing[t] && !was_playing[t])
             tr.cloud.Reset(); // (re)started: begin with a fresh grain cloud
@@ -282,20 +282,24 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
             }
             was_rec[t] = tr.tape.IsRecording();
 
-            float l = tr.grain_l[i], r = tr.grain_r[i];
+            float l = 0.f, r = 0.f;
             if(playing[t])
             {
-                if(!grain_mode[t])
-                    tr.tape.ReadTape(l, r);
-                else
+                tr.tape.ReadTape(l, r); // the loop always plays
+                if(grain_mode[t])
                 {
-                    float rl, rr; // the plain loop at the head: level reference
-                    tr.tape.ReadTape(rl, rr);
-                    ref_sum[t] += rl * rl + rr * rr;
-                    grain_sum[t] += l * l + r * r;
-                    const float g = tr.gain_prev + (tr.gain - tr.gain_prev) * float(i + 1) * inv_size;
-                    l *= g;
-                    r *= g;
+                    // Grains on top of the loop. The level match makes the
+                    // cloud as loud as the loop; kGrainLayer sits it a little
+                    // under it (-3 dB) so the layer adds texture without the
+                    // total jumping much. The limiter catches the rest.
+                    constexpr float kGrainLayer = 0.7f;
+                    const float     gl = tr.grain_l[i], gr = tr.grain_r[i];
+                    ref_sum[t] += l * l + r * r;
+                    grain_sum[t] += gl * gl + gr * gr;
+                    const float g = kGrainLayer
+                                    * (tr.gain_prev + (tr.gain - tr.gain_prev) * float(i + 1) * inv_size);
+                    l += gl * g;
+                    r += gr * g;
                 }
                 tr.tape.Advance();
             }
@@ -425,6 +429,7 @@ void loop()
         s.metro_active  = metro_active;
         s.metro_beat    = metro_beat;
         s.metro_enabled = controls.metronome_on();
+        s.grain_size_mode = controls.grain_size_mode();
         s.tape_name     = tr.tape_name;
         s.load_name     = loading_track == sel ? loading_name : nullptr;
         s.load_progress = loading_track == sel ? load_progress : -1.f;
