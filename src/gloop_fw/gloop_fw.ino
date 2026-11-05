@@ -42,6 +42,7 @@
 #include "envelopes.h"
 #include "fx.h"
 #include "grains.h"
+#include "metronome.h"
 #include "params.h"
 #include "st7789.h"
 #include "tape_loop.h"
@@ -101,6 +102,11 @@ static Ui            ui;
 static CpuMeter      cpu;
 static SampleLibrary library;
 static Browser       browser;
+static Metronome     metronome;
+
+// Metronome state for the UI
+static volatile bool metro_active = false; // clicking right now
+static volatile int  metro_beat   = 0;     // 0..3 within the bar
 
 // Input level for the record-arm meter (peak of the last block)
 static volatile float input_peak = 0.f;
@@ -226,11 +232,42 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
     float grain_sum[kNumTracks] = {0.f, 0.f};
     const float inv_size        = 1.f / float(size);
     float in_pk = 0.f;
+
+    // ---- Metronome: clicks while any track is armed or recording ----
+    // Beat 1 follows a loop that's playing (its loop start), so a new take
+    // stays in time with it. With nothing playing it runs from the moment a
+    // track is armed, and restarts on beat 1 when the recording begins.
+    static bool   was_armed[kNumTracks] = {false, false};
+    static bool   was_rec[kNumTracks]   = {false, false};
+    static double free_pos              = 0.0;
+    bool          click_on              = false;
+    int           follow                = -1;
+    for(int t = 0; t < kNumTracks; t++)
+    {
+        const TapeLoop& tp = tracks[t].tape;
+        if(tp.IsArmed() && !was_armed[t]) // just armed: count from here
+        {
+            free_pos = 0.0;
+            metronome.Resync();
+        }
+        was_armed[t] = tp.IsArmed();
+        click_on |= tp.IsArmed() || tp.IsRecording();
+        if(follow < 0 && tp.IsPlaying() && !tp.IsRecording())
+            follow = t;
+    }
+    click_on &= controls.metronome_on();
+    const float beat_len = 60.f / tracks[0].params.bpm * sample_rate; // quarter
+
     for(size_t i = 0; i < size; i++)
     {
         const float in_l = in[0][i];
         const float in_r = in[1][i];
         in_pk            = fmaxf(in_pk, fmaxf(fabsf(in_l), fabsf(in_r)));
+
+        // Click position: the followed loop's head, or the free counter
+        const double beat_pos = follow >= 0 ? tracks[follow].tape.Head() : free_pos;
+        const float  click    = metronome.Process(beat_pos, beat_len, click_on);
+        free_pos += 1.0;
 
         float mix_l = 0.f, mix_r = 0.f;   // dry track mix
         float send_l = 0.f, send_r = 0.f; // into the reverb
@@ -238,6 +275,12 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
         {
             Track& tr = tracks[t];
             tr.tape.Write(in_l, in_r); // no-op unless armed or recording
+            if(tr.tape.IsRecording() && !was_rec[t]) // take started this sample
+            {
+                free_pos = 0.0; // bar 1 = start of the take
+                metronome.Resync();
+            }
+            was_rec[t] = tr.tape.IsRecording();
 
             float l = tr.grain_l[i], r = tr.grain_r[i];
             if(playing[t])
@@ -269,10 +312,13 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
         reverb_bus.Process(send_l, send_r, wet_l, wet_r);
 
         // Input is monitored dry so you can hear what you're recording
-        out[0][i] = OutputLimit(mix_l + wet_l + in_l);
-        out[1][i] = OutputLimit(mix_r + wet_r + in_r);
+        // The click goes to the output only, never into a recording
+        out[0][i] = OutputLimit(mix_l + wet_l + in_l + click);
+        out[1][i] = OutputLimit(mix_r + wet_r + in_r + click);
     }
-    input_peak = in_pk;
+    input_peak   = in_pk;
+    metro_active = click_on;
+    metro_beat   = metronome.BarBeat();
 
     // Update the level match from this block (used from the next block)
     for(int t = 0; t < kNumTracks; t++)
@@ -316,6 +362,7 @@ void setup()
         tracks[t].filter.Init(sample_rate);
     }
     reverb_bus.Init(sample_rate, &reverb);
+    metronome.Init(sample_rate);
     controls.Init(sample_rate / kBlockSize, sample_rate); // once per block
 
     display.Init();
@@ -375,6 +422,9 @@ void loop()
         s.track         = sel;
         s.other_tape    = &tracks[1 - sel].tape;
         s.input_peak    = input_peak;
+        s.metro_active  = metro_active;
+        s.metro_beat    = metro_beat;
+        s.metro_enabled = controls.metronome_on();
         s.tape_name     = tr.tape_name;
         s.load_name     = loading_track == sel ? loading_name : nullptr;
         s.load_progress = loading_track == sel ? load_progress : -1.f;

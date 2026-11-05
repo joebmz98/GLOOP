@@ -26,6 +26,8 @@
 //                                Again while armed: cancel. While recording:
 //                                finish the take (→ it loops)
 //   SHIFT + REC                : start recording immediately (no waiting)
+//   SHIFT + PLAY               : metronome on / off (it clicks while a track
+//                                is armed or recording; see metronome.h)
 //   PLAY                       : BOTH tracks: stop if either is playing,
 //                                otherwise start both from their loop start
 //                                (in sync). If the selected track is
@@ -213,6 +215,7 @@ class Controls
     Page page() const { return page_; }
     bool shift() const { return shift_held_; }
     int  selected_track() const { return selected_track_; }
+    bool metronome_on() const { return metronome_on_; }
 
     // Length of one 8th note in samples
     float Eighth(float bpm) const { return 60.f / bpm * 0.5f * sr_; }
@@ -233,7 +236,9 @@ class Controls
             else
                 tape.Arm(); // wait for input
         }
-        if(play_.RisingEdge())
+        if(play_.RisingEdge() && shift_held_)
+            metronome_on_ = !metronome_on_; // SHIFT + PLAY: click on / off
+        else if(play_.RisingEdge())
         {
             bool any_playing = false;
             for(int t = 0; t < kNumTracks; t++)
@@ -256,6 +261,7 @@ class Controls
     Page           page_           = Page::Loop;
     bool           shift_held_     = false;
     float          sr_             = 48000.f;
+    bool           metronome_on_   = true;
 };
 
 } // namespace gloop

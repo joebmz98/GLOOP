@@ -34,6 +34,9 @@ struct UiState
     int             track      = 0;       // selected track: 0 = T1, 1 = T2
     const TapeLoop* other_tape = nullptr; // the other track (footer status)
     float           input_peak = 0.f;     // input level (record-arm meter)
+    bool            metro_active  = false; // metronome clicking
+    bool            metro_enabled = true;  // SHIFT + PLAY toggles
+    int             metro_beat    = 0;     // 0..3 within the bar
     const char*    tape_name      = nullptr; // sample on the tape (label)
     const char*    load_name      = nullptr; // sample being loaded
     float          load_progress  = -1.f;    // 0..1 while loading, else <0

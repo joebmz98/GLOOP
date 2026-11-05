@@ -62,6 +62,7 @@ Everything acts on the **selected track** (T1 or T2, shown in the header chip). 
 - **T1 / T2:** first press selects that track; pressed again on LOOP opens the sample browser for it (turn any encoder to move, push to open / load).
 - **REC arms** the track: it waits for input and starts recording when the input crosses about -34 dBFS, keeping the 10 ms before the trigger so the first attack isn't lost. The screen shows ARM and a live input meter with the trigger level marked. REC again cancels.
 - **SHIFT + REC** records immediately, without waiting.
+- **Metronome:** while a track is armed or recording it clicks every beat at the BPM (4/4, higher click on beat 1), with four beat dots in the header. If the other track is playing, beat 1 is that loop's start, so a new take stays in time with it; otherwise it starts when you arm and restarts on beat 1 when recording begins. The click goes to the output only, never into a recording. **SHIFT + PLAY** turns it on/off (dots show hollow when off).
 - While recording, REC or PLAY closes the loop and plays it. A take stops by itself at **30 s** (`kMaxLoopSeconds`).
 - **PLAY is global:** it stops both tracks if either is playing, otherwise starts both from their loop start points, in sync. If the selected track is recording, PLAY finishes the take instead.
 - **When a take finishes** (REC, PLAY or the 30 s limit): if the other track is already playing, the new loop **joins in** straight away; if nothing was playing, both tracks start together from their loop start.
@@ -89,6 +90,7 @@ Hold SHIFT to read the audio CPU load: **PK** (worst block in the last second) a
 | File | What it does |
 |---|---|
 | `gloop_fw.ino` | The two tracks, audio callback and mix, setup/loop, sample loading |
+| `metronome.h` | Click track while armed/recording, locked to a playing loop or to the take start |
 | `tape_loop.h` | 16-bit interleaved record buffer, record-arm with pre-roll, loop region, play head, seam crossfade |
 | `grains.h` | Grain pool (12 voices), block-based renderer, spray/spread/envelope, CPU throttle |
 | `envelopes.h` | 10 grain window lookup tables + level compensation |

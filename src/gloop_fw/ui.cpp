@@ -163,6 +163,27 @@ void Ui::DrawHeader(const UiState& s)
 
     if(s.shift)
         g_.Chip(70, 1, "SHIFT", Gfx::kSmall);
+    else
+    {
+        // Metronome: 4 beat dots, the current beat lit (beat 1 drawn larger).
+        // Hollow and still when a track is armed/recording but the click is
+        // switched off (SHIFT + PLAY).
+        const bool waiting = t.IsArmed() || t.IsRecording() || s.metro_active;
+        if(waiting)
+            for(int b = 0; b < 4; b++)
+            {
+                const int  x   = 74 + b * 5;
+                const int  sz  = b == 0 ? 4 : 3;
+                const int  y   = b == 0 ? 3 : 4;
+                const bool cur = s.metro_active && b == s.metro_beat;
+                if(!s.metro_enabled)
+                    g_.Rect(x, y, sz, sz, D);
+                else if(cur)
+                    g_.FillRect(x, y, sz, sz, W);
+                else
+                    g_.FillRect(x, y, sz, sz, D);
+            }
+    }
 
     g_.HLine(0, kSW - 1, 11, D);
 }
