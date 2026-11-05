@@ -119,6 +119,9 @@ static const char* loading_name  = nullptr; // what's being loaded
 static int         loading_track = 0;
 static uint32_t    load_start    = 0;
 static uint32_t    last_frame    = 0;
+static uint32_t    fps_start     = 0;   // FPS readout (hold SHIFT)
+static int         fps_count     = 0;
+static int         fps_shown     = 0;
 
 // ---- CPU safety valve ----------------------------------------------------------
 // If the audio callback gets close to its time budget, stop starting new grains
@@ -451,10 +454,18 @@ void loop()
         s.other_muted   = controls.muted(1 - sel);
         s.chorus_phase  = tr.chorus.Phase();
         s.tape_name     = tr.tape_name;
+        s.fps           = fps_shown;
         s.load_name     = loading_track == sel ? loading_name : nullptr;
         s.load_progress = loading_track == sel ? load_progress : -1.f;
         ui.Draw(s);
-        display.Flush();
+        display.Flush(); // only the parts that changed (see st7789.h)
+        fps_count++;
+    }
+    if(now - fps_start >= 1000) // frames per second, for the SHIFT readout
+    {
+        fps_shown = fps_count;
+        fps_count = 0;
+        fps_start = now;
     }
 
     // The peak reading covers the last second

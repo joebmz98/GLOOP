@@ -1021,7 +1021,7 @@ void Ui::DrawFooter(const UiState& s)
         total += Gfx::TextWidth(n, Gfx::kSmall) + gap;
     total -= gap;
     int x = kSW / 2 - total / 2;
-    for(int i = 0; i < kNumPages; i++)
+    for(int i = 0; i < kNumPages && !s.shift; i++) // SHIFT: FPS here instead
     {
         const char* n = kPageNames[i];
         if(i == int(s.page))
@@ -1055,6 +1055,12 @@ void Ui::DrawFooter(const UiState& s)
             return buf;
         };
         g_.Text(2, kFootLine + 3, pct("PK", s.cpu_peak), L, Gfx::kSmall);
+        char fps[8] = "FPS ";
+        const int f = s.fps > 99 ? 99 : s.fps;
+        fps[4]      = char('0' + f / 10);
+        fps[5]      = char('0' + f % 10);
+        fps[6]      = 0;
+        g_.TextCentered(kSW / 2, kFootLine + 3, fps, M, Gfx::kSmall);
         const char* avg = pct("CPU", s.cpu_avg);
         if(s.throttled)
             g_.Chip(kSW - Gfx::TextWidth(avg, Gfx::kSmall) - 4, kFootLine + 1, avg, Gfx::kSmall);

@@ -7,6 +7,14 @@
 // Flush() pushes the frame with blocking SPI transfers from loop(). The
 // audio callback is an interrupt, so it keeps running while the frame is
 // sent — a slow frame only lowers the frame rate, never glitches audio.
+//
+// Speed (a full 280x240 frame is 134 KB):
+//  * SPI clock: SPI1 runs from PLL2P = 50 MHz and divides by powers of 2, so
+//    the choices are 25 MHz, 12.5 MHz, ... (a 20 MHz request gives 12.5).
+//    kFastSpi moves SPI1 onto PLL1Q (160 MHz) for 40 MHz.
+//  * Dirty bands: Flush() compares the frame with a copy of what the panel
+//    already shows and only sends the changed part of each 8-row band. Most
+//    frames only change a few small areas (reels, rain, meters).
 // =============================================================================
 #pragma once
 #include <stddef.h>
@@ -29,19 +37,23 @@ class St7789
     // If the picture is upside down for how you mount the screen, use 0xA0.
     static constexpr uint8_t kMadctl = 0x60;
 
-    // SPI clock request; the core picks the nearest rate at or below this.
-    // 20 MHz is safe on a breadboard; try 40000000 once it's on a PCB.
-    static constexpr uint32_t kSpiHz = 20000000;
+    // SPI clock. false: 25 MHz (fine on a breadboard with short wires).
+    // true: 40 MHz, for a PCB or very short wires; if the picture shows
+    // speckles or shifted colours, go back to false.
+    static constexpr bool     kFastSpi = false;
+    static constexpr uint32_t kSpiHz   = kFastSpi ? 40000000 : 25000000;
 
     void      Init();
     uint16_t* Framebuffer();
-    void      Flush();
+    void      Flush();      // send only what changed since the last Flush
+    void      FlushAll();   // send the whole frame
+    uint32_t  LastBytes() const { return last_bytes_; } // pixel bytes sent
     bool      Busy() const { return false; } // blocking driver: never busy
 
   private:
-    // STM32H7 SPI can move at most 65535 bytes per transfer: send 10 bands
-    static constexpr int    kBands     = 10;
-    static constexpr size_t kBandBytes = size_t(kWidth) * (kHeight / kBands) * 2;
+    // Dirty-band height in rows (one band ≤ 65535 bytes: one SPI transfer)
+    static constexpr int kBandRows = 8;
+    uint32_t             last_bytes_ = 0;
 
     void Command(uint8_t cmd);
     void Data(const uint8_t* data, size_t len);

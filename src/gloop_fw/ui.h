@@ -28,6 +28,7 @@ struct UiState
     float             cpu_avg   = 0.f;   // audio CPU load, 0..1 (smoothed)
     float             cpu_peak  = 0.f;   // worst block in the last second
     bool              throttled = false; // safety valve is limiting grains
+    int               fps       = 0;     // screen frames in the last second
 
     // Sample browser / loading
     const Browser* browser        = nullptr; // menu shown when open

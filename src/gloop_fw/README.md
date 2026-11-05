@@ -75,7 +75,13 @@ Everything acts on the **selected track** (T1 or T2, shown in the header chip). 
 - **SHIFT + T1 / T2 mutes** that track (press again to unmute). It keeps playing silently, so it stays in sync; the fade is about 4 ms so there's no click. A muted track's header chip turns dark, and the footer shows **M** next to the other track when that one is muted. Its reverb tail still rings out.
 - SHIFT + turn = fine adjust (or the alternate parameter). Push an encoder to reset its parameter.
 - Reverb **SIZE** is shared by both tracks (one reverb); each track's **MIX** is its send into it. Every other parameter is per track.
-- Hold SHIFT to show CPU load (peak / average) in the footer.
+- Hold SHIFT to show CPU load (peak / average) and the screen frame rate (FPS) in the footer.
+
+## Display speed
+
+The screen redraws at 30 fps. A full frame is 134 KB, which takes 43 ms over SPI at 25 MHz, so `St7789::Flush()` compares each frame with what the panel already shows and only sends the changed part of each 8-row band, typically 2–8 KB (1–3 ms). A full frame only goes out when you change page. All of this runs in `loop()`; the audio is an interrupt, so the display can never glitch the sound.
+
+SPI1's clock divides by powers of 2 (50 MHz → 25 or 12.5 MHz). For 40 MHz, set `kFastSpi = true` in `st7789.h`, but only with short wires or on a PCB; if the picture shows speckles or wrong colours, set it back.
 
 ## Performance limits
 
@@ -102,6 +108,6 @@ Hold SHIFT to read the audio CPU load: **PK** (worst block in the last second) a
 | `browser.h` | Sample browser state + sample library (stand-in until SD) |
 | `params.h/.cpp` | Parameter struct, page map, value formatting |
 | `cpu_meter.h` | Audio CPU load from the Cortex-M7 cycle counter |
-| `st7789.h/.cpp` | Display driver (Arduino SPI, landscape) |
+| `st7789.h/.cpp` | Display driver (Arduino SPI at 25 MHz, landscape); sends only the parts of the screen that changed |
 | `gfx.h` | Greyscale pixel-art drawing, 3×5 and 5×7 fonts |
 | `ui.h/.cpp` | LOOP / GRAINS / FX screens and the sample browser |
