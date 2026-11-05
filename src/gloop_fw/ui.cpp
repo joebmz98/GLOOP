@@ -19,7 +19,7 @@
 #include <cmath>
 #include <cstdlib>
 
-namespace silt
+namespace gloop
 {
 // Palette: black, three greys, white. Background layers use the greys; live
 // things (cat, rain, play heads, values) are pure white.
@@ -190,7 +190,7 @@ void Ui::DrawLoop(const UiState& s)
     const int lx = ox + 8, ly = oy + 3, lw = 70, lh = 33;
     g_.FillRoundRect(lx, ly, lw, lh, W);
     // The label shows the loaded sample's name (11 characters fit)
-    char label[12] = "SILT A";
+    char label[12] = "GLOOP A";
     if(s.tape_name)
     {
         int n = 0;
@@ -1227,4 +1227,4 @@ void Ui::DrawLoading(const UiState& s)
     g_.FillRect(bx, by, int(bw * fminf(1.f, s.load_progress)), 5, W);
 }
 
-} // namespace silt
+} // namespace gloop

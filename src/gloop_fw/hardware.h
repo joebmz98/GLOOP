@@ -10,12 +10,12 @@
 //
 // Free for later:
 //   D13/D14 : USART1 (D14 = RX for TRS MIDI in)
-//   D27–D30 : spare GPIO
+//   D28–D30 : spare GPIO (D27 is reserved: the display's unused SPI MISO)
 // =============================================================================
 #pragma once
 #include <stdint.h>
 
-namespace silt
+namespace gloop
 {
 namespace pins
 {
@@ -25,6 +25,11 @@ constexpr uint8_t kLcdMosi = 10; // D10 (SPI1 MOSI)
 constexpr uint8_t kLcdCs   = 7;  // D7  held low (only device on the bus)
 constexpr uint8_t kLcdDc   = 9;  // D9  data/command
 constexpr uint8_t kLcdRst  = 11; // D11 reset
+// SPI1 always claims a MISO (input) pin. Its default is D9 (PB4), which is our
+// DC pin — that would silently kill DC and leave the screen blank. The display
+// never sends data back, so MISO is parked on D27 (PG9) instead.
+// Leave D27 UNCONNECTED.
+constexpr uint8_t kLcdMisoUnused = 27; // D27
 // Backlight: tie BLK to 3V3.
 
 // --- 4 push encoders (A, B, push) -------------------------------------------
@@ -43,4 +48,4 @@ constexpr uint8_t kBtnFx     = 6;  // D6
 constexpr uint8_t kBtnShift  = 12; // D12
 
 } // namespace pins
-} // namespace silt
+} // namespace gloop

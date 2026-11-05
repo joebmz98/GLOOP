@@ -1,12 +1,15 @@
 // =============================================================================
-// SILT — granular looper prototype, 1 track, Daisy Seed (Arduino IDE)
+// GLOOP — granular looper prototype, 1 track, Daisy Seed (Arduino IDE)
 //
 // Board setup (Arduino IDE):
 //   Board manager URL : https://github.com/stm32duino/BoardManagerFiles/raw/main/package_stmicroelectronics_index.json
 //   Board             : STM32 MCU based boards → Generic STM32H7 Series
 //   Board part number : Daisy Seed
 //   Upload method     : STM32CubeProgrammer (DFU)
-//   USB support       : None (or CDC if you want Serial for debugging)
+//   USB support       : None   (CDC adds ~12 KB of flash)
+//   Optimize          : Smallest (-Os default). The audio code switches
+//                       itself to -O2 with #pragma, so it stays fast while
+//                       the whole sketch fits the Seed's 128 KB flash.
 //   Library           : DaisyDuino (Library Manager)
 //
 // Two threads of execution:
@@ -41,7 +44,7 @@
 #include "tape_loop.h"
 #include "ui.h"
 
-using namespace silt;
+using namespace gloop;
 
 // ---- Memory placement --------------------------------------------------------
 // 60 s of stereo float audio = 23 MB → SDRAM (64 MB, initialised by DAISY.init).
@@ -88,7 +91,8 @@ static volatile bool   throttled    = false;
 // =============================================================================
 // Audio
 // =============================================================================
-void AudioCallback(float** in, float** out, size_t size)
+// Compiled for speed even under "Smallest (-Os)" (see the board settings above)
+__attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size_t size)
 {
     cpu.BlockStart();
 

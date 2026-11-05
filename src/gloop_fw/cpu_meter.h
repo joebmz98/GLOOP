@@ -11,7 +11,7 @@
 #pragma once
 #include <Arduino.h>
 
-namespace silt
+namespace gloop
 {
 class CpuMeter
 {
@@ -47,4 +47,4 @@ class CpuMeter
     volatile float    last_ = 0.f, avg_ = 0.f, peak_ = 0.f;
 };
 
-} // namespace silt
+} // namespace gloop

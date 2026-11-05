@@ -8,7 +8,7 @@
 #pragma once
 #include <cstddef>
 
-namespace silt
+namespace gloop
 {
 struct Params
 {
@@ -81,4 +81,4 @@ void FormatValue(const ParamDesc& d,
                  char*            out,
                  size_t           n);
 
-} // namespace silt
+} // namespace gloop

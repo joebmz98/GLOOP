@@ -7,7 +7,7 @@
 #include "params.h"
 #include <cmath>
 
-namespace silt
+namespace gloop
 {
 // label, field, min, max, step, default, integer, wrap, format
 const ParamDesc kPageParams[kNumPages][4] = {
@@ -151,4 +151,4 @@ void FormatValue(const ParamDesc& d,
     }
 }
 
-} // namespace silt
+} // namespace gloop

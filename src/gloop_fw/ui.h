@@ -15,7 +15,7 @@
 #include "st7789.h"
 #include "tape_loop.h"
 
-namespace silt
+namespace gloop
 {
 struct UiState
 {
@@ -108,4 +108,4 @@ class Ui
     int                  cat_t_                   = 0; // frames in this state
 };
 
-} // namespace silt
+} // namespace gloop

@@ -28,7 +28,7 @@
 #include "params.h"
 #include "tape_loop.h"
 
-namespace silt
+namespace gloop
 {
 class Controls
 {
@@ -176,4 +176,4 @@ class Controls
     bool           shift_held_ = false;
 };
 
-} // namespace silt
+} // namespace gloop

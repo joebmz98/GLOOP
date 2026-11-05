@@ -21,7 +21,7 @@
 #include <cstdint>
 #include <cstdlib>
 
-namespace silt
+namespace gloop
 {
 class Gfx
 {
@@ -358,4 +358,4 @@ class Gfx
     int       cx0_ = 0, cy0_ = 0, cx1_ = 0, cy1_ = 0;
 };
 
-} // namespace silt
+} // namespace gloop

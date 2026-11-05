@@ -12,7 +12,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-namespace silt
+namespace gloop
 {
 class St7789
 {
@@ -49,4 +49,4 @@ class St7789
     void SetWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);
 };
 
-} // namespace silt
+} // namespace gloop

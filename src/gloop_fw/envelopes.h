@@ -10,7 +10,13 @@
 #pragma once
 #include <cmath>
 
-namespace silt
+
+// Audio hot path: compiled for speed (-O2) even when the sketch is built
+// with "Smallest (-Os)" to fit the Seed's 128 KB internal flash.
+#pragma GCC push_options
+#pragma GCC optimize("O2")
+
+namespace gloop
 {
 class EnvelopeTable
 {
@@ -76,4 +82,6 @@ class EnvelopeTable
     float gain_[kShapes];
 };
 
-} // namespace silt
+} // namespace gloop
+
+#pragma GCC pop_options

@@ -20,7 +20,7 @@
 #pragma once
 #include <cstdint>
 
-namespace silt
+namespace gloop
 {
 struct SampleInfo
 {
@@ -181,4 +181,4 @@ class Browser
     int                  req_folder_ = 0, req_index_ = 0;
 };
 
-} // namespace silt
+} // namespace gloop

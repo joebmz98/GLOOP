@@ -6,7 +6,7 @@
 #include "st7789.h"
 #include "hardware.h"
 
-namespace silt
+namespace gloop
 {
 static uint16_t s_fb[St7789::kWidth * St7789::kHeight];
 
@@ -24,7 +24,11 @@ void St7789::Init()
 
     SPI.setMOSI(pins::kLcdMosi);
     SPI.setSCLK(pins::kLcdSck);
+    // Must come before begin(): otherwise SPI takes D9 (our DC pin) as MISO
+    SPI.setMISO(pins::kLcdMisoUnused);
     SPI.begin();
+    // Re-assert DC as a plain output after SPI has set up its pins
+    pinMode(pins::kLcdDc, OUTPUT);
     SPI.beginTransaction(SPISettings(kSpiHz, MSBFIRST, SPI_MODE0));
 
     // --- Hardware reset ---------------------------------------------------------
@@ -90,4 +94,4 @@ void St7789::Flush()
         Data(p + size_t(b) * kBandBytes, kBandBytes);
 }
 
-} // namespace silt
+} // namespace gloop
