@@ -30,8 +30,8 @@ class St7789
     static constexpr uint8_t kMadctl = 0x60;
 
     // SPI clock request; the core picks the nearest rate at or below this.
-    // Drop to 20 MHz if long breadboard wires give a noisy picture.
-    static constexpr uint32_t kSpiHz = 40000000;
+    // 20 MHz is safe on a breadboard; try 40000000 once it's on a PCB.
+    static constexpr uint32_t kSpiHz = 20000000;
 
     void      Init();
     uint16_t* Framebuffer();

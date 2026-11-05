@@ -156,6 +156,10 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
 // =============================================================================
 void setup()
 {
+    // Heartbeat: the Seed's onboard LED blinks while loop() is running, so a
+    // blank screen can be told apart from firmware that never started.
+    pinMode(LED_BUILTIN, OUTPUT);
+
     hw          = DAISY.init(DAISY_SEED, AUDIO_SR_48K);
     sample_rate = DAISY.get_samplerate();
 
@@ -175,6 +179,8 @@ void setup()
 
 void loop()
 {
+    digitalWrite(LED_BUILTIN, (millis() / 500) % 2); // heartbeat
+
     if(tape.ConsumeJustFinished())
         ui.BuildOverview(tape);
 

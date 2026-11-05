@@ -20,7 +20,10 @@ void St7789::Init()
     pinMode(pins::kLcdCs, OUTPUT);
     pinMode(pins::kLcdDc, OUTPUT);
     pinMode(pins::kLcdRst, OUTPUT);
-    digitalWrite(pins::kLcdCs, LOW); // only device on the bus: select permanently
+    // Keep the display DESELECTED until SPI is set up: SPI.begin() can put a
+    // glitch on the clock line, which a selected display would read as a bit
+    // and then stay one bit out of step for every byte after it.
+    digitalWrite(pins::kLcdCs, HIGH);
 
     SPI.setMOSI(pins::kLcdMosi);
     SPI.setSCLK(pins::kLcdSck);
@@ -58,17 +61,23 @@ void St7789::Init()
     Flush();
 }
 
+// Each command / data burst selects the display (CS low) only while it is
+// being sent, so any stray clock edge between bursts is ignored.
 void St7789::Command(uint8_t cmd)
 {
+    digitalWrite(pins::kLcdCs, LOW);
     digitalWrite(pins::kLcdDc, LOW);
     SPI.transfer(cmd, SPI_TRANSMITONLY);
+    digitalWrite(pins::kLcdCs, HIGH);
 }
 
 void St7789::Data(const uint8_t* data, size_t len)
 {
+    digitalWrite(pins::kLcdCs, LOW);
     digitalWrite(pins::kLcdDc, HIGH);
     // transmit-only: the buffer is sent, not overwritten with received bytes
     SPI.transfer((void*)data, len, SPI_TRANSMITONLY);
+    digitalWrite(pins::kLcdCs, HIGH);
 }
 
 void St7789::SetWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
@@ -89,9 +98,14 @@ void St7789::SetWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 void St7789::Flush()
 {
     SetWindow(0, 0, kWidth - 1, kHeight - 1);
+    // One selection for the whole frame (the SPI peripheral can only move
+    // 65,535 bytes per transfer, so it goes out in bands)
     const uint8_t* p = reinterpret_cast<const uint8_t*>(s_fb);
+    digitalWrite(pins::kLcdCs, LOW);
+    digitalWrite(pins::kLcdDc, HIGH);
     for(int b = 0; b < kBands; b++)
-        Data(p + size_t(b) * kBandBytes, kBandBytes);
+        SPI.transfer((void*)(p + size_t(b) * kBandBytes), kBandBytes, SPI_TRANSMITONLY);
+    digitalWrite(pins::kLcdCs, HIGH);
 }
 
 } // namespace gloop
