@@ -10,7 +10,8 @@
 //   track 2 ─ SVF LP ─ chorus ─ drive ─┬─ x(1 - MIX2) ──────────────┤
 //                                      └─ x MIX2 ──┴─ ReverbSc ─ wet ┴─► out
 //
-//  * TrackFilter: stereo state-variable low-pass. CUTOFF is exponential
+//  * TrackFilter: stereo state-variable filter, LP / HP / BP (SHIFT +
+//    CUTOFF), crossfaded over 5 ms when the type changes. CUTOFF is exponential
 //    (40 Hz × 450^x ≈ 40 Hz..18 kHz) and smoothed so encoder steps don't
 //    zipper. RESO is capped below self-oscillation.
 //  * ReverbBus: ONE ReverbSc shared by both tracks (it's one of the most
@@ -44,15 +45,27 @@ class TrackFilter
         cutoff_hz_ = 18000.f;
     }
 
-    // Block rate
-    void SetParams(float cutoff01, float reso)
+    // Block rate. type: 0 = low-pass, 1 = high-pass, 2 = band-pass
+    void SetParams(float cutoff01, float reso, float type)
     {
         float target = 40.f * powf(450.f, cutoff01);
         cutoff_hz_ += (target - cutoff_hz_) * 0.15f; // one-pole smoothing
+        const float res = reso * 0.9f;
         for(auto& f : svf_)
         {
             f.SetFreq(cutoff_hz_);
-            f.SetRes(reso * 0.9f);
+            f.SetRes(res);
+        }
+        // The SVF's band output peaks at 1/damp (-6 dB with no RESO): lift it
+        // so BP sits at about the same level as LP/HP
+        bp_gain_ = 1.f + (1.f - powf(res, 0.25f));
+
+        const int t = int(type + 0.5f);
+        if(t != type_) // switch types with a ~5 ms crossfade (no click)
+        {
+            prev_type_ = type_;
+            type_      = t;
+            xf_        = 0.f;
         }
     }
 
@@ -61,12 +74,28 @@ class TrackFilter
     {
         svf_[0].Process(l);
         svf_[1].Process(r);
-        l = svf_[0].Low();
-        r = svf_[1].Low();
+        l = Out(0, type_);
+        r = Out(1, type_);
+        if(xf_ < 1.f)
+        {
+            xf_ += 1.f / 240.f;
+            const float k = xf_ > 1.f ? 1.f : xf_;
+            l = Out(0, prev_type_) + k * (l - Out(0, prev_type_));
+            r = Out(1, prev_type_) + k * (r - Out(1, prev_type_));
+        }
     }
 
   private:
+    inline float Out(int ch, int type)
+    {
+        return type == 1 ? svf_[ch].High() : (type == 2 ? svf_[ch].Band() * bp_gain_ : svf_[ch].Low());
+    }
+
     daisysp::Svf svf_[2];
+    int          type_      = 0;
+    int          prev_type_ = 0;
+    float        xf_        = 1.f;
+    float        bp_gain_   = 2.f;
     float        cutoff_hz_ = 18000.f;
 };
 

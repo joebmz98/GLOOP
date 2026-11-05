@@ -1,6 +1,6 @@
 # GLOOP — 2-track granular looper firmware
 
-Daisy Seed firmware, built with the Arduino IDE. Two tracks, each: tape looper → grain cloud → low-pass filter → chorus → drive, mixed into one shared reverb. 240×280 ST7789 TFT (landscape) and a sample browser.
+Daisy Seed firmware, built with the Arduino IDE. Two tracks, each: tape looper → grain cloud → filter (LP/HP/BP) → chorus → drive, mixed into one shared reverb. 240×280 ST7789 TFT (landscape) and a sample browser.
 
 ## Arduino IDE setup (once)
 
@@ -54,8 +54,8 @@ D1–D6 are also the Seed's SD card pins: when SD loading is added, the buttons 
 | Page | Enc 1 | Enc 2 | Enc 3 | Enc 4 |
 |---|---|---|---|---|
 | LOOP | Start · SHIFT: **BPM** | Length (8th notes) · SHIFT: **free length** | Pitch (±24 st) | Crossfade |
-| GRAINS | Grains (0 = loop only, 1–12 = grains on top of the loop) · alt: **Size** | Spray | Spread · alt: **Grain pitch** (±24 st) | Envelope |
-| FX | Cutoff · page 2: **Drive** | Resonance · page 2: **Tone** | Reverb size · page 2: **Chorus rate** | Reverb mix · page 2: **Chorus mix** |
+| GRAINS | Grains (0 = loop only, 1–12 = grains on top of the loop) · alt: **Size** | Spray | Spread · alt: **Grain pitch** (±24 st) | Mix (loop ↔ grains, default 50%) · alt: **Envelope** |
+| FX | Cutoff · SHIFT: **filter type** (LP / HP / BP) · page 2: **Drive** | Resonance · page 2: **Tone** | Reverb size · page 2: **Chorus rate** | Reverb mix · page 2: **Chorus mix** |
 
 Everything acts on the **selected track** (T1 or T2, shown in the header chip). The footer's bottom-left shows what the other track is doing.
 
@@ -69,8 +69,10 @@ Everything acts on the **selected track** (T1 or T2, shown in the header chip). 
 - **BPM:** SHIFT + START sets the tempo (40–240, shared by both tracks), shown next to LOOP in the header.
 - **LENGTH** is counted in 8th notes at that BPM (shown as e.g. `6/8`, `16/8`), so loops stay in time when the BPM changes. A new take is fitted to the most whole 8ths it holds.
 - **SHIFT + LENGTH** frees the length from the grid (shown in seconds). Turning LENGTH again without SHIFT snaps it back onto the nearest 8th.
-- **GRAINS 0** is just the loop; **1–12** layer that many grains **on top of the loop**, which keeps playing underneath. The cloud's level is matched to the loop automatically and sits about 3 dB under it, so changing GRAINS / SPRAY / ENV / SIZE doesn't jump the volume.
-- **Press GRAINS again** while on the GRAINS page for the **alt layer**: encoder 1 = grain **SIZE**, encoder 3 = grain **PITCH** (±24 semitones, the grains only; the loop underneath keeps its own PITCH). Their labels show inverted; press GRAINS again to go back. SHIFT + encoder 1 also reaches SIZE.
+- **GRAINS 0** is just the loop; **1–12** add that many grains alongside the loop. The cloud's level is matched to the loop automatically, so changing GRAINS / SPRAY / ENV / SIZE doesn't jump the volume.
+- **MIX** (GRAINS encoder 4) balances the loop against the grains: 0% = loop only, 100% = grains only, **50% (default)** = both at -3 dB (an equal-power blend), which keeps the total about as loud as the loop on its own.
+- **Press GRAINS again** while on the GRAINS page for the **alt layer**: encoder 1 = grain **SIZE**, encoder 3 = grain **PITCH** (±24 semitones, the grains only; the loop keeps its own PITCH), encoder 4 = grain **ENVELOPE** (window shape). Their labels show inverted; press GRAINS again to go back. SHIFT + encoder 1 also reaches SIZE.
+- **SHIFT + CUTOFF** switches the filter between **LP**, **HP** and **BP** (shown next to FILTER). If the filter was wide open it stays open for the new type (e.g. HP moves CUTOFF to the bottom), and pushing CUTOFF resets it to the open position for the current type. Types crossfade over 5 ms, so switching doesn't click.
 - **Press FX again** while on the FX page for **FX page 2**: DRIVE (soft-clip distortion, 0 = off), TONE (dark → bright after the clipper), CH.RATE (chorus LFO 0.05–10 Hz) and CH.MIX (0 = off, 100% = classic 50/50 chorus). The screen shows the drive curve and the two chorus sweeps (L/R a quarter cycle apart). Press FX again to go back. Per track the order is **Filter → Chorus → Drive → Reverb**.
 - **SHIFT + T1 / T2 mutes** that track (press again to unmute). It keeps playing silently, so it stays in sync; the fade is about 4 ms so there's no click. A muted track's header chip turns dark, and the footer shows **M** next to the other track when that one is muted. Its reverb tail still rings out.
 - SHIFT + turn = fine adjust (or the alternate parameter). Push an encoder to reset its parameter.

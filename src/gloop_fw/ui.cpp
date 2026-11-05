@@ -888,7 +888,10 @@ void Ui::DrawFx(const UiState& s)
     const Params& p = *s.params;
 
     // ---- Filter -----------------------------------------------------------------
+    const int ftype = int(p.filter_type + 0.5f); // 0 LP, 1 HP, 2 BP
+    static const char* const kTypeNames[3] = {"LP", "HP", "BP"};
     g_.Chip(1, 13, "FILTER", Gfx::kSmall);
+    g_.Text(33, 15, kTypeNames[ftype], s.shift ? W : L, Gfx::kSmall); // SHIFT+ENC1
     const int top = 25, bot = 83, x0 = 3, w = 82;
     for(int gx = x0 + 20; gx < x0 + w; gx += 21)
         g_.VLine(gx, top, bot, D);
@@ -900,7 +903,8 @@ void Ui::DrawFx(const UiState& s)
     {
         float xq  = float(x) / w;
         float wn  = powf(10.f, (xq - p.cutoff) * 2.2f);
-        float mag = 1.f / sqrtf((1.f - wn * wn) * (1.f - wn * wn) + (wn / q) * (wn / q));
+        float num = ftype == 1 ? wn * wn : (ftype == 2 ? wn / q : 1.f);
+        float mag = num / sqrtf((1.f - wn * wn) * (1.f - wn * wn) + (wn / q) * (wn / q));
         float db  = fmaxf(-36.f, fminf(12.f, 20.f * log10f(mag)));
         int   y   = top + int((12.f - db) / 48.f * float(bot - top));
         if(y < bot) // area under the curve: mid grey near the line, dark below

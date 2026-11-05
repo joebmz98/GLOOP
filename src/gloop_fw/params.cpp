@@ -20,7 +20,7 @@ const ParamDesc kPageParams[kNumPages][4] = {
     {{"GRAINS", &Params::grains, 0.f, 12.f, 1.f, 0.f, true, false, Format::Int},
      {"SPRAY", &Params::spray, 0.f, 1.f, 0.01f, 0.1f, false, false, Format::Percent},
      {"SPREAD", &Params::spread, 0.f, 1.f, 0.01f, 0.3f, false, false, Format::Percent},
-     {"ENV", &Params::envelope, 0.f, 9.f, 1.f, 0.f, true, true, Format::EnvName}},
+     {"MIX", &Params::grain_mix, 0.f, 1.f, 0.01f, 0.5f, false, false, Format::Percent}},
     // FX
     {{"CUTOFF", &Params::cutoff, 0.f, 1.f, 0.01f, 1.f, false, false, Format::Hertz},
      {"RESO", &Params::reso, 0.f, 1.f, 0.01f, 0.f, false, false, Format::Percent},
@@ -42,8 +42,14 @@ static const ParamDesc kFreeLength
 static const ParamDesc kGrainPitch
     = {"G.PITCH", &Params::grain_pitch, -24.f, 24.f, 1.f, 0.f, false, false, Format::Semitones};
 
+static const ParamDesc kEnvelope
+    = {"ENV", &Params::envelope, 0.f, 9.f, 1.f, 0.f, true, true, Format::EnvName};
+
+// GRAINS alt layer: 1 = SIZE, 3 = grain PITCH, 4 = ENVELOPE
 const ParamDesc* GrainsAltParam(int encoder)
 {
+    if(encoder == 3)
+        return &kEnvelope;
     if(encoder == 0)
         return &kGrainSize;
     if(encoder == 2)
@@ -68,8 +74,13 @@ const ParamDesc* AltParam(Page page, int encoder)
     return nullptr;
 }
 
+static const ParamDesc kFilterType
+    = {"TYPE", &Params::filter_type, 0.f, 2.f, 1.f, 0.f, true, true, Format::FilterType};
+
 const ParamDesc* ShiftParam(Page page, int encoder)
 {
+    if(page == Page::Fx && encoder == 0)
+        return &kFilterType; // SHIFT + CUTOFF: LP → HP → BP
     if(page == Page::Grains && encoder == 0)
         return &kGrainSize;
     if(page == Page::Loop && encoder == 0)
@@ -182,6 +193,13 @@ void FormatValue(const ParamDesc& d,
             p = AppendInt(out, p, n, (int)lroundf(v));
             Append(out, p, n, "/8");
             break;
+        case Format::FilterType:
+        {
+            static const char* const kTypes[3] = {"LP", "HP", "BP"};
+            int i = (int)lroundf(v);
+            Append(out, p, n, kTypes[i < 0 ? 0 : (i > 2 ? 2 : i)]);
+            break;
+        }
         case Format::EnvName:
         {
             int i = (int)lroundf(v);

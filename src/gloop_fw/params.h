@@ -27,13 +27,15 @@ struct Params
                               //     top of the loop
     float spray      = 0.1f;  // 0..1 position randomness around the play head
     float spread     = 0.3f;  // 0..1 stereo randomness
-    float envelope   = 0.f;   // 0..9 grain window shape (Quanta-style list)
+    float grain_mix  = 0.5f;  // 0 = loop only .. 1 = grains only (GRAINS ≥ 1)
+    float envelope   = 0.f;   // 0..9 grain window shape (alt layer, enc 4)
     float grain_size = 0.08f; // 0.01..0.5 s   (GRAINS alt layer, encoder 1)
     float grain_pitch = 0.f;  // -24..+24 semitones, grains only (alt, enc 3)
 
     // FX page
     float cutoff   = 1.f;  // 0..1 → 40 Hz..18 kHz (exponential)
     float reso     = 0.f;  // 0..1
+    float filter_type = 0.f; // 0 = LP, 1 = HP, 2 = BP (SHIFT + CUTOFF)
     float rev_size = 0.5f; // 0..1 → reverb feedback
     float rev_mix  = 0.f;  // 0..1 dry/wet
 
@@ -64,9 +66,18 @@ enum class Format
     Hertz,     // 0..1 cutoff → "2.4K"
     Eighths,   // 8th-note count → "6/8", "16/8"
     LfoHz,     // 0..1 → 0.05..10 Hz → "0.8HZ"
+    FilterType, // 0/1/2 → "LP" / "HP" / "BP"
 };
 
 // Describes one encoder's job on one page
+// Where CUTOFF leaves the sound untouched for each filter type
+// (LP fully up, HP fully down, BP in the middle)
+inline float FilterOpenCutoff(float type)
+{
+    const int t = int(type + 0.5f);
+    return t == 1 ? 0.f : (t == 2 ? 0.5f : 1.f);
+}
+
 struct ParamDesc
 {
     const char*   label;

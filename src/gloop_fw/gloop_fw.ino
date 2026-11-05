@@ -82,6 +82,10 @@ struct Track
     float grain_ms = 0.f; // smoothed mean-square of the raw grain output
     float gain     = 1.f; // gain that makes the grains as loud as the loop
     float gain_prev = 1.f;
+
+    // GRAINS MIX (loop ↔ grains balance), ramped across each block
+    float loop_g = 1.f, loop_g_prev = 1.f;
+    float grain_g = 0.f, grain_g_prev = 0.f;
 };
 
 // Length of one 8th note in samples
@@ -217,10 +221,28 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
         tr.cloud.SetThrottle(throttled);
         tr.cloud.SetParams(count, p.grain_size, p.spray, p.spread, int(p.envelope + 0.5f), rate,
                            powf(2.f, p.grain_pitch / 12.f)); // grains-only pitch
-        tr.filter.SetParams(p.cutoff, p.reso);
+        tr.filter.SetParams(p.cutoff, p.reso, p.filter_type);
         tr.chorus.SetParams(p.chorus_rate, p.chorus_mix);
         tr.drive.SetParams(p.drive, p.drive_tone);
         any_send |= p.rev_mix > 0.0005f;
+
+        // MIX: equal-power balance between the loop and the grains. At 50%
+        // each is at 71% (-3 dB), which keeps the total as loud as the loop
+        // on its own, because the level match makes the grains as loud as
+        // the loop. GRAINS 0 = loop only, whatever the MIX.
+        tr.loop_g_prev  = tr.loop_g;
+        tr.grain_g_prev = tr.grain_g;
+        if(grain_mode[t])
+        {
+            const float a = p.grain_mix * 1.5707963f;
+            tr.loop_g     = cosf(a);
+            tr.grain_g    = sinf(a);
+        }
+        else
+        {
+            tr.loop_g  = 1.f;
+            tr.grain_g = 0.f;
+        }
 
         // ---- 3. Grains: the whole block in one go (before the head moves) ----
         for(size_t i = 0; i < size; i++)
@@ -295,20 +317,26 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
             if(playing[t])
             {
                 tr.tape.ReadTape(l, r); // the loop always plays
+                // MIX gains, ramped across the block (no zipper noise)
+                const float k  = float(i + 1) * inv_size;
+                const float lg = tr.loop_g_prev + (tr.loop_g - tr.loop_g_prev) * k;
+                const float gg = tr.grain_g_prev + (tr.grain_g - tr.grain_g_prev) * k;
                 if(grain_mode[t])
                 {
-                    // Grains on top of the loop. The level match makes the
-                    // cloud as loud as the loop; kGrainLayer sits it a little
-                    // under it (-3 dB) so the layer adds texture without the
-                    // total jumping much. The limiter catches the rest.
-                    constexpr float kGrainLayer = 0.7f;
-                    const float     gl = tr.grain_l[i], gr = tr.grain_r[i];
+                    // The level match measures the plain loop and the raw
+                    // cloud, then makes the cloud as loud as the loop; MIX
+                    // then balances the two
+                    const float gl = tr.grain_l[i], gr = tr.grain_r[i];
                     ref_sum[t] += l * l + r * r;
                     grain_sum[t] += gl * gl + gr * gr;
-                    const float g = kGrainLayer
-                                    * (tr.gain_prev + (tr.gain - tr.gain_prev) * float(i + 1) * inv_size);
-                    l += gl * g;
-                    r += gr * g;
+                    const float g = gg * (tr.gain_prev + (tr.gain - tr.gain_prev) * k);
+                    l = l * lg + gl * g;
+                    r = r * lg + gr * g;
+                }
+                else if(lg < 0.9999f) // GRAINS just went to 0: finish the ramp
+                {
+                    l *= lg;
+                    r *= lg;
                 }
                 tr.tape.Advance();
             }

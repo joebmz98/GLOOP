@@ -12,7 +12,8 @@
 //                                LOOP first)
 //   LOOP / GRAINS / FX buttons : choose which page the 4 encoders edit
 //   GRAINS again (on GRAINS)   : alt layer on/off: encoder 1 = grain SIZE,
-//                                encoder 3 = grain PITCH (labels inverted)
+//                                encoder 3 = grain PITCH, encoder 4 =
+//                                ENVELOPE (labels inverted)
 //   FX again (on FX)           : FX page 2: DRIVE, TONE, CHORUS RATE, MIX
 //   SHIFT + T1 / T2            : mute / unmute that track
 //   Encoder turn               : edit that page's parameter (selected track)
@@ -21,6 +22,7 @@
 //                                  LOOP enc 1 (START)  → BPM (both tracks)
 //                                  LOOP enc 2 (LENGTH) → FREE length
 //                                  GRAINS enc 1        → grain SIZE
+//                                  FX enc 1 (CUTOFF)   → filter TYPE LP/HP/BP
 //   LENGTH                     : steps in 8th notes at the BPM. If the length
 //                                was free, the first turn snaps it back onto
 //                                the 8th-note grid.
@@ -203,6 +205,14 @@ class Controls
             }
             if(push)
                 v = d.def;
+            if(push && d.field == &Params::cutoff)
+                v = FilterOpenCutoff(p.filter_type); // "open" for this type
+
+            // Filter type changed: if the filter was open, keep it open for
+            // the new type (an HP at LP's open position would be silent)
+            if(d.field == &Params::filter_type && v != old
+               && fabsf(p.cutoff - FilterOpenCutoff(old)) < 0.02f)
+                p.cutoff = FilterOpenCutoff(v);
 
             // Which length mode is in charge
             if(inc != 0 || push)
