@@ -916,49 +916,122 @@ static void DrawFxPage2(Gfx& g, const UiState& s, uint32_t frame)
 {
     const Params& p = *s.params;
 
-    // ---- Resonator: one line per mode at its frequency (log scale, 30 Hz ..
-    //      16 kHz). STRUCTURE squeezes/stretches the spacing, BRIGHT and
-    //      DECAY set how tall the upper modes stand, and the whole set
-    //      pulses with the resonator's output level. Same maths as fx.h.
-    {
+    // ---- Resonator: a wine glass played with a wet finger ----------------
+    //   FREQ    water level (more water = lower note, like a real glass)
+    //   STRUCT  glass shape: narrow flute (harmonic) → wide bell bowl
+    //   BRIGHT  how shiny the glass and the sound waves are
+    //   DECAY   how many sound waves ripple out, and how far
+    //   R.MIX   0: the glass just sits there; up: a finger circles the rim,
+    //           the water shivers and waves pulse with the output level
     g.Chip(1, 13, "RESONATOR", Gfx::kSmall);
-    const int  x0 = 3, w = 82, top = 25, bot = 80;
-    const bool on = p.res_mix > 0.001f;
-    g.HLine(x0, x0 + w - 1, bot, D);
+    {
+        const bool  on    = p.res_mix > 0.001f;
+        const float lvl   = on ? fminf(1.f, s.res_level * 4.f) : 0.f;
+        const int   cx    = 44;
+        const int   rim_y = 38, bowl_bot = 64, stem_bot = 78;
+        const int   rim_w = 7 + int(p.res_struct * 9.f);      // half-width at rim
+        const uint16_t glass = !on ? M : (p.res_bright > 0.5f ? W : L);
 
-    float st = p.res_struct, stiff;
-    if(st < 0.25f)
-        stiff = -(0.25f - st) * 0.25f;
-    else if(st < 0.3f)
-        stiff = 0.f;
-    else if(st < 0.9f)
-        stiff = (st - 0.3f) / 0.6f;
-    else
-    {
-        float q = (st - 0.9f) * 10.f;
-        stiff   = 1.5f - cosf(q * q * 3.14159265f) * 0.5f;
-    }
-    const float f0     = 440.f * powf(2.f, (p.res_note - 69.f) / 12.f);
-    const float bright = p.res_bright * (1.f - st * 0.3f) * (1.f - p.res_decay * 0.3f);
-    const float q_loss = bright * (2.f - bright) * 0.85f + 0.15f;
-    const float pulse  = on ? 0.45f + 0.55f * fminf(1.f, s.res_level * 4.f) : 0.3f;
-    float       stretch = 1.f, harm = f0, amp = 1.f, k = stiff;
-    for(int i = 0; i < 16; i++)
-    {
-        const float f = harm * stretch;
-        if(f > 16000.f)
-            break;
-        const int x = x0 + int(logf(f / 30.f) / logf(16000.f / 30.f) * (w - 1));
-        const int h = int((bot - top) * amp * pulse);
-        if(x >= x0 && h > 0)
-            g.VLine(x, bot - h, bot - 1, !on ? D : (i == 0 ? W : L));
-        stretch += k;
-        k *= k < 0.f ? 0.93f : 0.98f;
-        harm += f0;
-        amp *= 0.55f + 0.45f * q_loss; // dark: upper modes shrink quickly
-    }
-    if(!on)
-        g.TextCentered(x0 + w / 2, top + 4, "SHIFT+ENC4: MIX", M, Gfx::kSmall);
+        // Bowl half-width at row y: straight-ish flute when STRUCT is low,
+        // a rounded bell when it's high
+        auto half = [&](int y) {
+            const float t  = float(y - rim_y) / float(bowl_bot - rim_y); // 0 rim .. 1 bottom
+            const float t2 = t * t;
+            const float bowl  = sqrtf(fmaxf(0.f, 1.f - t2));                  // round bowl
+            const float flute = (1.f - 0.6f * t) * sqrtf(fmaxf(0.f, 1.f - t2 * t2 * t2));
+            const float k     = p.res_struct;
+            return fmaxf(1.f, rim_w * (flute * (1.f - k) + bowl * k));
+        };
+
+        // Water: FREQ C1 → nearly full .. C7 → almost empty
+        const float wfrac = 0.85f - (p.res_note - 24.f) / 72.f * 0.75f;
+        const int   wy    = bowl_bot - int(wfrac * (bowl_bot - rim_y - 3));
+        for(int y = wy + 1; y < bowl_bot; y++)
+        {
+            const int hw = int(half(y)) - 1;
+            if(hw > 0)
+                g.HLine(cx - hw, cx + hw, y, D);
+        }
+        // Water surface, shivering with the output level
+        {
+            const int hw  = int(half(wy)) - 1;
+            int       prv = wy;
+            for(int x = -hw; x <= hw; x++)
+            {
+                const float wob = lvl * 1.6f * sinf(x * 0.9f + frame * 0.7f);
+                const int   y   = wy + int(lroundf(wob));
+                if(x > -hw)
+                    g.Line(cx + x - 1, prv, cx + x, y, on ? L : M);
+                prv = y;
+            }
+        }
+        // Bowl outline (rows joined, so the steep bottom has no gaps)
+        for(int y = rim_y + 1; y <= bowl_bot; y++)
+        {
+            const int a = int(half(y - 1)), b = int(half(y));
+            g.Line(cx - a, y - 1, cx - b, y, glass);
+            g.Line(cx + a, y - 1, cx + b, y, glass);
+        }
+        // Rim (a flat ellipse)
+        for(int x = -rim_w; x <= rim_w; x++)
+        {
+            const float u  = float(x) / rim_w;
+            const int   dy = int(lroundf(2.f * sqrtf(fmaxf(0.f, 1.f - u * u))));
+            g.Pixel(cx + x, rim_y - dy, glass);
+            g.Pixel(cx + x, rim_y + dy, on ? M : D);
+        }
+        // Shine: a streak down the left of the bowl, brighter with BRIGHT
+        if(p.res_bright > 0.2f)
+        {
+            const uint16_t shine = p.res_bright > 0.66f ? W : (p.res_bright > 0.4f ? L : M);
+            for(int y = rim_y + 3; y < rim_y + 12; y++)
+                g.Pixel(cx - int(half(y)) + 2, y, shine);
+        }
+        // Stem and foot
+        g.VLine(cx, bowl_bot + 1, stem_bot - 1, glass);
+        g.HLine(cx - 10, cx + 10, stem_bot, glass);
+        g.HLine(cx - 7, cx + 7, stem_bot - 1, on ? M : D);
+
+        // Sound waves either side: count and reach from DECAY, shade from
+        // BRIGHT, moving outwards and pulsing with the output
+        if(on)
+        {
+            const int   waves = 1 + int(p.res_decay * 3.f + 0.5f);
+            const float phase = float(frame % 12) / 12.f;
+            const int   wcy   = (rim_y + bowl_bot) / 2;
+            for(int k = 0; k < waves; k++)
+            {
+                const float r = float(rim_w + 7) + (k + phase) * 7.f;
+                if(r > 42.f)
+                    break;
+                const float fade = 1.f - (k + phase) / float(waves + 1);
+                const float b    = fade * (0.4f + 0.6f * lvl) * (0.5f + 0.5f * p.res_bright);
+                if(b < 0.15f)
+                    continue;
+                const uint16_t c = b > 0.6f ? W : (b > 0.35f ? L : M);
+                for(int a = -9; a <= 9; a++) // ±40 degrees
+                {
+                    const float ang = a * 0.077f;
+                    const int   dx  = int(r * cosf(ang));
+                    const int   dy  = int(r * sinf(ang) * 0.9f);
+                    if(a % 3 == 0 && k > 0)
+                        continue; // outer waves dashed: they're fading
+                    g.Pixel(cx + dx, wcy + dy, c);
+                    g.Pixel(cx - dx, wcy + dy, c);
+                }
+            }
+
+            // The finger, circling the rim (dimmer when it's round the back)
+            const float th   = frame * 0.12f;
+            const int   fx   = cx + int(rim_w * cosf(th));
+            const bool  back = sinf(th) < 0.f;
+            const uint16_t fc = back ? M : W;
+            g.FillRect(fx - 1, rim_y - 11, 3, 10, fc);       // finger
+            g.FillRect(fx - 1, rim_y - 2, 3, 1, back ? D : L); // fingertip (wet)
+            g.Pixel(fx, rim_y - 3, back ? D : L);             // nail
+        }
+        else
+            g.TextCentered(44, 26, "SHIFT+ENC4: MIX", M, Gfx::kSmall);
     }
 
     g.VLine(89, kBodyTop, kBodyBot, D, false); // divider

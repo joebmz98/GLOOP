@@ -80,7 +80,7 @@ Everything acts on the **selected track** (T1 or T2, shown in the header chip). 
   - SHIFT + enc 4 **R.MIX**: resonator dry/wet. **0% = off** (the default, and it then costs no CPU); 100% = resonator only. Its level is matched to the input automatically, so DECAY and FREQ don't make the volume jump.
   - Enc 3 / 4 **CH.RATE / CH.MIX**: the chorus (0.05–10 Hz; mix 0 = off).
   - The chorus panel is a little choir: one silent singer at CH.MIX 0, up to eight singing at 100%, mouths opening and closing at CH.RATE.
-  - The screen draws one line per overtone at its pitch (log scale), taller when brighter, pulsing with the resonator's output.
+  - The resonator panel is a wine glass played with a wet finger: FREQ sets the water level (more water = lower note), STRUCT morphs the glass from a narrow flute (harmonic) to a wide bell-shaped bowl, BRIGHT makes it shine, DECAY sets how many sound waves ripple out. The finger only circles the rim while R.MIX is up, and the water shivers with the output.
 - **SHIFT + T1 / T2 mutes** that track (press again to unmute). It keeps playing silently, so it stays in sync; the fade is about 4 ms so there's no click. A muted track's header chip turns dark, and the footer shows **M** next to the other track when that one is muted. Its reverb tail still rings out.
 - SHIFT + turn = fine adjust (or the alternate parameter). Push an encoder to reset its parameter.
 - Reverb **SIZE** is shared by both tracks (one reverb); each track's **MIX** is its send into it. Every other parameter is per track.
