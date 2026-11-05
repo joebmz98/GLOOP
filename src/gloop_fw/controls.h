@@ -14,7 +14,9 @@
 //   GRAINS again (on GRAINS)   : alt layer on/off: encoder 1 = grain SIZE,
 //                                encoder 3 = grain PITCH, encoder 4 =
 //                                ENVELOPE (labels inverted)
-//   FX again (on FX)           : FX page 2: DRIVE, TONE, CHORUS RATE, MIX
+//   FX again (on FX)           : FX page 2: resonator FREQ, BRIGHT, chorus
+//                                RATE, chorus MIX. With SHIFT: enc 1 =
+//                                STRUCTURE, enc 2 = DECAY, enc 4 = RES MIX
 //   SHIFT + T1 / T2            : mute / unmute that track
 //   Encoder turn               : edit that page's parameter (selected track)
 //   SHIFT + turn               : fine adjust (×0.1), or the alternate
@@ -104,7 +106,7 @@ class Controls
             if(page_btn_[i].RisingEdge())
             {
                 // GRAINS or FX pressed again on its own page: alt layer
-                // (GRAINS: SIZE / grain PITCH; FX: drive and chorus)
+                // (GRAINS: SIZE / PITCH / ENV; FX: resonator and chorus)
                 if(Page(i) == page_ && Page(i) != Page::Loop && !browser.IsOpen())
                     grain_size_mode_ = !grain_size_mode_;
                 else if(Page(i) != page_)
@@ -160,9 +162,8 @@ class Controls
         // 5. Encoders edit the current page's parameters
         for(int i = 0; i < 4; i++)
         {
-            const ParamDesc* alt = shift_held_ ? ShiftParam(page_, i) : nullptr;
-            if(grain_size_mode_ && AltParam(page_, i))
-                alt = AltParam(page_, i); // page's alt layer
+            // SHIFT layer / page alt layer / both (see params.cpp)
+            const ParamDesc* alt = OverrideParam(page_, i, shift_held_, grain_size_mode_);
             const ParamDesc& d   = alt ? *alt : kPageParams[int(page_)][i];
             float&           v   = p.*(d.field);
             int              inc = enc_[i].Increment();

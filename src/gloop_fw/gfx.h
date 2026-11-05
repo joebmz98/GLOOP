@@ -289,7 +289,7 @@ class Gfx
         return -1;
     }
 
-    static constexpr const char* kMap = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.:+-%/<>";
+    static constexpr const char* kMap = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.:+-%/<>#";
 
     // 3x5: 5 rows, bit 2 = left column
     void Glyph3x5(int x, int y, char ch, uint16_t c)
@@ -307,6 +307,7 @@ class Gfx
             {5, 5, 2, 2, 2}, {7, 1, 2, 4, 7},                                   // Y Z
             {0, 0, 0, 0, 2}, {0, 2, 0, 2, 0}, {0, 2, 7, 2, 0}, {0, 0, 7, 0, 0}, // . : + -
             {5, 1, 2, 4, 5}, {1, 1, 2, 4, 4}, {1, 2, 4, 2, 1}, {4, 2, 1, 2, 4}, // % / < >
+            {5, 7, 5, 7, 5},                                                    // #
         };
         int i = Index(ch, kMap);
         if(i < 0)
@@ -343,6 +344,7 @@ class Gfx
             {0x08, 0x08, 0x3E, 0x08, 0x08}, {0x08, 0x08, 0x08, 0x08, 0x08}, // + -
             {0x23, 0x13, 0x08, 0x64, 0x62}, {0x20, 0x10, 0x08, 0x04, 0x02}, // % /
             {0x08, 0x14, 0x22, 0x41, 0x00}, {0x00, 0x41, 0x22, 0x14, 0x08}, // < >
+            {0x14, 0x7F, 0x14, 0x7F, 0x14},                                 // #
         };
         int i = Index(ch, kMap);
         if(i < 0)

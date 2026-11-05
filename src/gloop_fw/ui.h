@@ -42,6 +42,7 @@ struct UiState
     bool            muted        = false; // selected track muted
     bool            other_muted  = false; // other track muted
     float           chorus_phase = 0.f;   // for the FX page 2 picture
+    float           res_level    = 0.f;   // resonator output level (FX page 2)
     const char*    tape_name      = nullptr; // sample on the tape (label)
     const char*    load_name      = nullptr; // sample being loaded
     float          load_progress  = -1.f;    // 0..1 while loading, else <0

@@ -71,7 +71,7 @@ struct Track
     GrainCloud  cloud;
     TrackFilter  filter;
     StereoChorus chorus;
-    Drive        drive;
+    ModalResonator res;
     float        mute_gain = 1.f; // glides to 0 when muted (no click)
     const char* tape_name = nullptr; // sample loaded onto the tape (label)
     float       grain_l[kMaxBlock];  // this block's grain output
@@ -223,7 +223,7 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
                            powf(2.f, p.grain_pitch / 12.f)); // grains-only pitch
         tr.filter.SetParams(p.cutoff, p.reso, p.filter_type);
         tr.chorus.SetParams(p.chorus_rate, p.chorus_mix);
-        tr.drive.SetParams(p.drive, p.drive_tone);
+        tr.res.SetParams(p.res_note, p.res_bright, p.res_struct, p.res_decay, p.res_mix);
         any_send |= p.rev_mix > 0.0005f;
 
         // MIX: equal-power balance between the loop and the grains. At 50%
@@ -340,10 +340,10 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
                 }
                 tr.tape.Advance();
             }
-            // Per-track FX chain: filter → chorus → drive (then reverb send)
+            // Per-track FX chain: filter → chorus → resonator (then reverb send)
             tr.filter.Process(l, r);
             tr.chorus.Process(l, r);
-            tr.drive.Process(l, r);
+            tr.res.Process(l, r);
 
             // Mute (SHIFT + track button): ~4 ms glide, the track keeps
             // running underneath so it comes back in time
@@ -411,7 +411,7 @@ void setup()
         tracks[t].cloud.Init(sample_rate, &envelopes);
         tracks[t].filter.Init(sample_rate);
         tracks[t].chorus.Init(sample_rate);
-        tracks[t].drive.Init(sample_rate);
+        tracks[t].res.Init(sample_rate);
     }
     reverb_bus.Init(sample_rate, &reverb);
     metronome.Init(sample_rate);
@@ -481,6 +481,7 @@ void loop()
         s.muted         = controls.muted(sel);
         s.other_muted   = controls.muted(1 - sel);
         s.chorus_phase  = tr.chorus.Phase();
+        s.res_level     = tr.res.Level();
         s.tape_name     = tr.tape_name;
         s.fps           = fps_shown;
         s.load_name     = loading_track == sel ? loading_name : nullptr;

@@ -57,10 +57,10 @@ const ParamDesc* GrainsAltParam(int encoder)
     return nullptr;
 }
 
-// FX page 2: drive (distortion) and chorus
+// FX page 2: resonator and chorus
 static const ParamDesc kFxAlt[4] = {
-    {"DRIVE", &Params::drive, 0.f, 1.f, 0.01f, 0.f, false, false, Format::Percent},
-    {"TONE", &Params::drive_tone, 0.f, 1.f, 0.01f, 0.6f, false, false, Format::Percent},
+    {"FREQ", &Params::res_note, 24.f, 96.f, 1.f, 48.f, true, false, Format::Note},
+    {"BRIGHT", &Params::res_bright, 0.f, 1.f, 0.01f, 0.5f, false, false, Format::Percent},
     {"CH.RATE", &Params::chorus_rate, 0.f, 1.f, 0.01f, 0.3f, false, false, Format::LfoHz},
     {"CH.MIX", &Params::chorus_mix, 0.f, 1.f, 0.01f, 0.f, false, false, Format::Percent},
 };
@@ -72,6 +72,32 @@ const ParamDesc* AltParam(Page page, int encoder)
     if(page == Page::Fx)
         return &kFxAlt[encoder];
     return nullptr;
+}
+
+// FX page 2 + SHIFT: the resonator's other controls (enc 3 has none)
+static const ParamDesc kFxAltShift[4] = {
+    {"STRUCT", &Params::res_struct, 0.f, 1.f, 0.01f, 0.27f, false, false, Format::Percent},
+    {"DECAY", &Params::res_decay, 0.f, 1.f, 0.01f, 0.5f, false, false, Format::Percent},
+    {nullptr, nullptr, 0.f, 0.f, 0.f, 0.f, false, false, Format::Percent},
+    {"R.MIX", &Params::res_mix, 0.f, 1.f, 0.01f, 0.f, false, false, Format::Percent},
+};
+
+const ParamDesc* AltShiftParam(Page page, int encoder)
+{
+    if(page == Page::Fx && kFxAltShift[encoder].label)
+        return &kFxAltShift[encoder];
+    return nullptr;
+}
+
+const ParamDesc* OverrideParam(Page page, int encoder, bool shift, bool alt_layer)
+{
+    if(alt_layer && AltParam(page, encoder))
+    {
+        if(shift && AltShiftParam(page, encoder))
+            return AltShiftParam(page, encoder);
+        return AltParam(page, encoder);
+    }
+    return shift ? ShiftParam(page, encoder) : nullptr;
 }
 
 static const ParamDesc kFilterType
@@ -198,6 +224,15 @@ void FormatValue(const ParamDesc& d,
             static const char* const kTypes[3] = {"LP", "HP", "BP"};
             int i = (int)lroundf(v);
             Append(out, p, n, kTypes[i < 0 ? 0 : (i > 2 ? 2 : i)]);
+            break;
+        }
+        case Format::Note:
+        {
+            static const char* const kNames[12]
+                = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+            const int m = (int)lroundf(v);
+            p = Append(out, p, n, kNames[((m % 12) + 12) % 12]);
+            p = AppendInt(out, p, n, m / 12 - 1); // MIDI 60 = C4
             break;
         }
         case Format::EnvName:

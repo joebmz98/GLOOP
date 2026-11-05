@@ -39,9 +39,12 @@ struct Params
     float rev_size = 0.5f; // 0..1 → reverb feedback
     float rev_mix  = 0.f;  // 0..1 dry/wet
 
-    // FX page 2 (FX pressed again). Chain: filter → chorus → drive → reverb
-    float drive       = 0.f;  // 0..1 distortion amount (0 = off)
-    float drive_tone  = 0.6f; // 0..1 dark → bright (600 Hz..18 kHz low-pass)
+    // FX page 2 (FX pressed again). Chain: filter → chorus → resonator → reverb
+    float res_note   = 48.f;  // MIDI note 24..96 (C1..C7), default C3
+    float res_bright = 0.5f;  // 0..1 wood → glass
+    float res_struct = 0.27f; // 0..1, 0.25..0.3 = harmonic (SHIFT + enc 1)
+    float res_decay  = 0.5f;  // 0..1 knock → ~30 s drone (SHIFT + enc 2)
+    float res_mix    = 0.f;   // 0..1 (0 = off) (SHIFT + enc 4)
     float chorus_rate = 0.3f; // 0..1 → 0.05..10 Hz
     float chorus_mix  = 0.f;  // 0..1 (0 = off, 1 = classic 50/50 chorus)
 };
@@ -67,6 +70,7 @@ enum class Format
     Eighths,   // 8th-note count → "6/8", "16/8"
     LfoHz,     // 0..1 → 0.05..10 Hz → "0.8HZ"
     FilterType, // 0/1/2 → "LP" / "HP" / "BP"
+    Note,       // MIDI note → "C3", "F#4"
 };
 
 // Describes one encoder's job on one page
@@ -102,6 +106,13 @@ const ParamDesc* GrainsAltParam(int encoder);
 // The alt layer of a page (page button pressed again): GRAINS → SIZE /
 // grain PITCH, FX → drive and chorus. nullptr = encoder keeps its job.
 const ParamDesc* AltParam(Page page, int encoder);
+
+// SHIFT on a page's alt layer (FX page 2: STRUCTURE, DECAY, RES MIX)
+const ParamDesc* AltShiftParam(Page page, int encoder);
+
+// The parameter an encoder edits right now, given SHIFT and the alt layer.
+// nullptr = its normal kPageParams entry.
+const ParamDesc* OverrideParam(Page page, int encoder, bool shift, bool alt_layer);
 
 // Envelope shape names, shared by the UI and the formatter
 extern const char* const kEnvelopeNames[10];

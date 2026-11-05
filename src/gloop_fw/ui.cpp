@@ -812,46 +812,56 @@ void Ui::DrawGrains(const UiState& s)
 // =============================================================================
 // FX: filter response (left) | reverb rings (right)
 // =============================================================================
-// Same soft clip as Drive::Clip in fx.h (kept here so the UI needn't pull in
-// the audio headers)
-static inline float DriveClip(float x)
-{
-    if(x > 3.f)
-        return 1.f;
-    if(x < -3.f)
-        return -1.f;
-    const float x2 = x * x;
-    return x * (27.f + x2) / (27.f + 9.f * x2);
-}
-
-// FX page 2 (FX pressed again): drive transfer curve | chorus LFOs
+// FX page 2 (FX pressed again): resonator modes | chorus LFOs
 static void DrawFxPage2(Gfx& g, const UiState& s, uint32_t frame)
 {
     const Params& p = *s.params;
     (void)frame;
 
-    // ---- Drive: the clipping curve at the current amount ----------------------
-    g.Chip(1, 13, "DRIVE", Gfx::kSmall);
-    const int cx = 44, cy = 54, half = 26; // a square plot, x/y in -1..1
-    g.HLine(cx - half, cx + half, cy, D);
-    g.VLine(cx, cy - half, cy + half, D);
-    g.Line(cx - half, cy + half, cx + half, cy - half, D, 2); // clean (y = x)
-    const float drive  = 1.f + p.drive * p.drive * 40.f;
-    const float norm   = 1.f / DriveClip(drive); // shape, scaled to the plot
-    int         prev   = 0;
-    for(int x = -half; x <= half; x++)
+    // ---- Resonator: one line per mode at its frequency (log scale, 30 Hz ..
+    //      16 kHz). STRUCTURE squeezes/stretches the spacing, BRIGHT and
+    //      DECAY set how tall the upper modes stand, and the whole set
+    //      pulses with the resonator's output level. Same maths as fx.h.
     {
-        float in  = float(x) / half;
-        float out = p.drive < 0.005f ? in : DriveClip(in * drive) * norm;
-        out       = out > 1.f ? 1.f : (out < -1.f ? -1.f : out);
-        int y     = cy - int(out * half);
-        if(x > -half)
-            g.Line(cx + x - 1, prev, cx + x, y, W);
-        prev = y;
+    g.Chip(1, 13, "RESONATOR", Gfx::kSmall);
+    const int  x0 = 3, w = 82, top = 25, bot = 80;
+    const bool on = p.res_mix > 0.001f;
+    g.HLine(x0, x0 + w - 1, bot, D);
+
+    float st = p.res_struct, stiff;
+    if(st < 0.25f)
+        stiff = -(0.25f - st) * 0.25f;
+    else if(st < 0.3f)
+        stiff = 0.f;
+    else if(st < 0.9f)
+        stiff = (st - 0.3f) / 0.6f;
+    else
+    {
+        float q = (st - 0.9f) * 10.f;
+        stiff   = 1.5f - cosf(q * q * 3.14159265f) * 0.5f;
     }
-    // Tone: a small brightness bar under the curve (dark → bright)
-    g.Rect(cx - half, cy + half + 3, 2 * half + 1, 4, M);
-    g.FillRect(cx - half + 1, cy + half + 4, int((2 * half - 1) * p.drive_tone), 2, L);
+    const float f0     = 440.f * powf(2.f, (p.res_note - 69.f) / 12.f);
+    const float bright = p.res_bright * (1.f - st * 0.3f) * (1.f - p.res_decay * 0.3f);
+    const float q_loss = bright * (2.f - bright) * 0.85f + 0.15f;
+    const float pulse  = on ? 0.45f + 0.55f * fminf(1.f, s.res_level * 4.f) : 0.3f;
+    float       stretch = 1.f, harm = f0, amp = 1.f, k = stiff;
+    for(int i = 0; i < 16; i++)
+    {
+        const float f = harm * stretch;
+        if(f > 16000.f)
+            break;
+        const int x = x0 + int(logf(f / 30.f) / logf(16000.f / 30.f) * (w - 1));
+        const int h = int((bot - top) * amp * pulse);
+        if(x >= x0 && h > 0)
+            g.VLine(x, bot - h, bot - 1, !on ? D : (i == 0 ? W : L));
+        stretch += k;
+        k *= k < 0.f ? 0.93f : 0.98f;
+        harm += f0;
+        amp *= 0.55f + 0.45f * q_loss; // dark: upper modes shrink quickly
+    }
+    if(!on)
+        g.TextCentered(x0 + w / 2, top + 4, "SHIFT+ENC4: MIX", M, Gfx::kSmall);
+    }
 
     g.VLine(89, kBodyTop, kBodyBot, D, false); // divider
 
@@ -972,9 +982,7 @@ void Ui::DrawReadouts(const UiState& s)
     const TapeLoop& t = *s.tape;
     for(int i = 0; i < 4; i++)
     {
-        const ParamDesc* alt = s.shift ? ShiftParam(s.page, i) : nullptr;
-        if(s.grain_size_mode && AltParam(s.page, i))
-            alt = AltParam(s.page, i); // page's alt layer
+        const ParamDesc* alt = OverrideParam(s.page, i, s.shift, s.grain_size_mode);
         const ParamDesc& d   = alt ? *alt : kPageParams[int(s.page)][i];
         float            v   = s.params->*(d.field);
         int              x   = 2 + (i % 2) * 70;
