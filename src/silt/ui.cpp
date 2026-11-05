@@ -1,0 +1,1230 @@
+// =============================================================================
+// ui.cpp — 1-bit pixel-art screens, LANDSCAPE
+//
+// Everything is drawn on a 140 x 120 logical grid (2x2 physical pixels each,
+// on the 280 x 240 rotated panel).
+//
+//   y   0..10   header  : [T1] chip, page name, transport status
+//   y  13..84   page body
+//                 LOOP   : cassette tape + waveform strip
+//                 GRAINS : cat on a pavement in the rain (rain = grains)
+//                 FX     : filter curve | reverb rings, side by side
+//   y  87..107  readouts: 2x2 grid, mirrors the 2x2 encoders on the panel
+//   y 111..119  footer  : page tabs
+//
+// Black, three greys and white: background layers in grey, live elements in
+// white, so overlapping layers stay easy to tell apart.
+// =============================================================================
+#include "ui.h"
+#include <cmath>
+#include <cstdlib>
+
+namespace silt
+{
+// Palette: black, three greys, white. Background layers use the greys; live
+// things (cat, rain, play heads, values) are pure white.
+static constexpr uint16_t W      = Gfx::kWhite;
+static constexpr uint16_t L      = Gfx::Rgb(176, 176, 180); // light grey
+static constexpr uint16_t M      = Gfx::Rgb(108, 108, 114); // mid grey
+static constexpr uint16_t D      = Gfx::Rgb(50, 50, 56);    // dark grey
+static constexpr uint16_t B      = Gfx::kBlack;
+static constexpr float    kTwoPi = 6.2831853f;
+
+// Logical layout
+static constexpr int kSW        = 140; // screen width
+static constexpr int kBodyTop   = 13;
+static constexpr int kBodyBot   = 84;
+static constexpr int kReadLine  = 86;
+static constexpr int kReadTop   = 88;
+static constexpr int kCellW     = 66;
+static constexpr int kFootLine  = 110;
+
+static const char* const kPageNames[kNumPages] = {"LOOP", "GRAINS", "FX"};
+
+void Ui::Init(St7789* display, const EnvelopeTable* env)
+{
+    display_ = display;
+    env_     = env;
+    g_.Init(display->Framebuffer(), St7789::kWidth, St7789::kHeight, 2);
+}
+
+void Ui::BuildOverview(const TapeLoop& tape)
+{
+    size_t n = tape.RecordedLength();
+    if(n == 0)
+    {
+        has_overview_ = false;
+        return;
+    }
+    const float* l        = tape.Channel(0);
+    const float* r        = tape.Channel(1);
+    size_t       col_sz   = n / kOverviewCols;
+    size_t       stride   = col_sz / 400 + 1; // ≤ ~400 reads per column
+    float        peak_all = 0.0001f;
+    for(int c = 0; c < kOverviewCols; c++)
+    {
+        float peak = 0.f;
+        for(size_t i = c * col_sz; i < (c + 1) * col_sz; i += stride)
+            peak = fmaxf(peak, fmaxf(fabsf(l[i]), fabsf(r[i])));
+        overview_[c] = peak;
+        peak_all     = fmaxf(peak_all, peak);
+    }
+    for(auto& v : overview_)
+        v /= peak_all; // normalise so quiet takes are still visible
+    has_overview_ = true;
+}
+
+// =============================================================================
+// Frame
+// =============================================================================
+void Ui::Draw(const UiState& s)
+{
+    frame_++;
+    g_.Fill(B);
+    g_.ResetClip();
+    if(s.browser && s.browser->IsOpen())
+    {
+        DrawBrowser(s); // the menu takes over the whole screen
+        return;
+    }
+    DrawHeader(s);
+    g_.SetClip(0, kBodyTop - 1, kSW - 1, kBodyBot);
+    switch(s.page)
+    {
+        case Page::Loop: DrawLoop(s); break;
+        case Page::Grains: DrawGrains(s); break;
+        case Page::Fx: DrawFx(s); break;
+    }
+    if(s.load_progress >= 0.f)
+        DrawLoading(s);
+    g_.ResetClip();
+    DrawReadouts(s);
+    DrawFooter(s);
+}
+
+// ---- Header ------------------------------------------------------------------------
+void Ui::DrawHeader(const UiState& s)
+{
+    DrawTrackChip(s);
+    g_.Text(16, 2, kPageNames[int(s.page)], W, Gfx::kBig);
+
+    const TapeLoop& t  = *s.tape;
+    const bool      on = (frame_ / 8) % 2 == 0;
+    if(t.IsRecording())
+    {
+        // Blinking inverted REC chip with a dot
+        const int x = kSW - 27;
+        if(on)
+        {
+            g_.FillRect(x, 0, 27, 11, W);
+            g_.FillCircle(x + 4, 5, 2, B);
+            g_.TextRight(kSW - 2, 2, "REC", B, Gfx::kBig);
+        }
+        else
+        {
+            g_.Circle(x + 4, 5, 2, W);
+            g_.TextRight(kSW - 2, 2, "REC", W, Gfx::kBig);
+        }
+    }
+    else if(t.IsPlaying())
+    {
+        g_.TextRight(kSW - 1, 2, "PLAY", W, Gfx::kBig);
+        int ax = kSW - 31 + (on ? 1 : 0); // nudging play triangle
+        for(int i = 0; i < 4; i++)
+            g_.VLine(ax + i, 3 + i, 9 - i, W);
+    }
+    else
+    {
+        g_.TextRight(kSW - 1, 2, "STOP", W, Gfx::kBig);
+        g_.FillRect(kSW - 32, 3, 5, 5, W);
+    }
+
+    if(s.shift)
+        g_.Chip(70, 1, "SHIFT", Gfx::kSmall);
+
+    g_.HLine(0, kSW - 1, 11, D);
+}
+
+// =============================================================================
+// LOOP: cassette tape + waveform strip
+// =============================================================================
+void Ui::DrawLoop(const UiState& s)
+{
+    const TapeLoop& t     = *s.tape;
+    const float     total = float(t.RecordedLength());
+
+    // How far through the loop (or buffer, when recording) we are. Tape winds
+    // from the left reel onto the right reel, then the loop jumps back.
+    float phase = 0.f;
+    if(t.IsRecording())
+        phase = total / float(t.Capacity());
+    else if(t.HasLoop())
+        phase = float(t.Head()) / t.RegionLength();
+
+    // Reels spin at the tape rate, so PITCH visibly changes their speed
+    if(t.IsPlaying() || t.IsRecording())
+        reel_angle_ += (t.IsRecording() ? 1.f : t.Rate()) * 0.25f;
+    if(reel_angle_ > kTwoPi)
+        reel_angle_ -= kTwoPi;
+
+    // ---- Shell (86 x 54, centred) ----------------------------------------------
+    const int ox = 27, oy = 13, sw = 86, sh = 54;
+    g_.FillRoundRect(ox, oy, sw, sh, D);  // dark grey plastic
+    g_.RoundRect(ox, oy, sw, sh, L);      // light edge
+    g_.RoundRect(ox + 1, oy + 1, sw - 2, sh - 2, M);
+    const int scr[5][2] = {{ox + 4, oy + 4},
+                           {ox + sw - 5, oy + 4},
+                           {ox + 4, oy + sh - 5},
+                           {ox + sw - 5, oy + sh - 5},
+                           {ox + sw / 2, oy + sh - 5}};
+    for(auto& p : scr) // screws: tiny "+"
+    {
+        g_.Pixel(p[0], p[1], L);
+        g_.Pixel(p[0] - 1, p[1], M);
+        g_.Pixel(p[0] + 1, p[1], M);
+        g_.Pixel(p[0], p[1] - 1, M);
+        g_.Pixel(p[0], p[1] + 1, M);
+    }
+
+    // ---- Label sticker -------------------------------------------------------------
+    const int lx = ox + 8, ly = oy + 3, lw = 70, lh = 33;
+    g_.FillRoundRect(lx, ly, lw, lh, W);
+    // The label shows the loaded sample's name (11 characters fit)
+    char label[12] = "SILT A";
+    if(s.tape_name)
+    {
+        int n = 0;
+        for(; s.tape_name[n] && n < 11; n++)
+            label[n] = s.tape_name[n];
+        label[n] = 0;
+    }
+    g_.Text(lx + 3, ly + 2, label, B, Gfx::kSmall);
+
+    // Speed written on the label, e.g. "X1.26"
+    char speed[8]   = {'X', 0};
+    int  hundredths = int(lroundf(t.Rate() * 100.f));
+    speed[1]        = char('0' + (hundredths / 100) % 10);
+    speed[2]        = '.';
+    speed[3]        = char('0' + (hundredths / 10) % 10);
+    speed[4]        = char('0' + hundredths % 10);
+    speed[5]        = 0;
+    g_.TextRight(lx + lw - 4, ly + 2, speed, B, Gfx::kSmall);
+    g_.HLine(lx + 3, lx + lw - 4, ly + 8, B);
+    g_.HLine(lx + 3, lx + lw - 4, ly + lh - 2, M);
+
+    // ---- Window with tape packs and hubs ---------------------------------------------
+    const int wx = ox + 15, wy = oy + 11, ww = 56, wh = 21;
+    g_.FillRoundRect(wx, wy, ww, wh, B);
+    const int   hub_y   = wy + wh / 2;
+    const int   hubs[2] = {wx + 13, wx + ww - 14};
+    const float packs[2] = {5.f + (1.f - phase) * 11.f, 5.f + phase * 11.f};
+
+    g_.SetClip(wx + 1, wy + 1, wx + ww - 2, wy + wh - 2);
+    for(int i = 0; i < 2; i++)
+    {
+        int r = int(packs[i]);
+        g_.FillCircle(hubs[i], hub_y, r, M); // tape pack
+        g_.Circle(hubs[i], hub_y, r, L);
+    }
+    g_.SetClip(0, kBodyTop - 1, kSW - 1, kBodyBot);
+
+    for(int i = 0; i < 2; i++) // hubs: ring, white disc, 6 rotating teeth
+    {
+        int cx = hubs[i];
+        g_.FillCircle(cx, hub_y, 5, B);
+        g_.Circle(cx, hub_y, 5, L);
+        g_.FillCircle(cx, hub_y, 3, W);
+        g_.FillCircle(cx, hub_y, 1, B);
+        for(int k = 0; k < 6; k++)
+        {
+            float a = reel_angle_ + k * kTwoPi / 6.f;
+            g_.Pixel(cx + int(lroundf(cosf(a) * 3.f)), hub_y + int(lroundf(sinf(a) * 3.f)), B);
+        }
+    }
+    g_.RoundRect(wx, wy, ww, wh, B);
+
+    // ---- Bottom of the shell: trapezoid with the head opening ------------------------
+    const int tb = oy + sh - 1, tt = oy + 40, cx = ox + sw / 2;
+    g_.Line(cx - 24, tb, cx - 19, tt, M);
+    g_.HLine(cx - 19, cx + 18, tt, M);
+    g_.Line(cx + 18, tt, cx + 23, tb, M);
+    g_.FillCircle(cx - 12, tt + 6, 2, B); // capstan holes
+    g_.Circle(cx - 12, tt + 6, 2, M);
+    g_.FillCircle(cx + 11, tt + 6, 2, B);
+    g_.Circle(cx + 11, tt + 6, 2, M);
+    g_.FillRect(cx - 6, tt + 4, 12, 8, B); // head opening
+    g_.Rect(cx - 6, tt + 4, 12, 8, M);
+    if(t.IsPlaying() || t.IsRecording()) // head glows
+        g_.FillRect(cx - 3, tt + 6, 6, 4, (frame_ / 4) % 2 == 0 ? W : L);
+    g_.HLine(cx - 22, cx + 21, tb - 2, M); // tape across the bottom
+
+    // ---- Waveform strip ------------------------------------------------------------
+    const int top = 70, bot = 84, mid = (top + bot) / 2, x0 = 4, w = 132;
+    if(t.IsRecording())
+    {
+        g_.Rect(x0, mid - 3, w, 7, M);
+        g_.FillRect(x0 + 2, mid - 1, w - 4, 3, D);
+        g_.FillRect(x0 + 2, mid - 1, int((w - 4) * phase) + 1, 3, W);
+    }
+    else if(t.HasLoop() && has_overview_)
+    {
+        float rs = t.RegionStart() / total;
+        float re = (t.RegionStart() + t.RegionLength()) / total;
+        for(int x = 0; x < w; x += 2)
+        {
+            float f  = (x + 0.5f) / w;
+            int   h  = 1 + int(overview_[int(f * kOverviewCols)] * 5.f);
+            bool  in = f >= rs && f <= re;
+            g_.VLine(x0 + x, mid - h, mid + h, in ? L : D); // loop light, rest dark
+        }
+        int xs = x0 + int(rs * w);
+        int xe = x0 + int(re * w);
+        int xw = int(t.Xfade() / total * w);
+        g_.VLine(xs, top, bot, W); // region brackets
+        g_.HLine(xs, xs + 2, top, W);
+        g_.HLine(xs, xs + 2, bot, W);
+        g_.VLine(xe, top, bot, W);
+        g_.HLine(xe - 2, xe, top, W);
+        g_.HLine(xe - 2, xe, bot, W);
+        if(xw > 0) // crossfade ramps
+        {
+            g_.Line(xs + 1, bot - 1, xs + xw, top + 1, W);
+            g_.Line(xe - xw, top + 1, xe - 1, bot - 1, W);
+        }
+        int ph = x0 + int((t.RegionStart() + float(t.Head())) / total * w);
+        g_.VLine(ph, top, bot, W); // play head
+        g_.VLine(ph + 1, top, bot, B);
+    }
+    else
+    {
+        g_.TextCentered(68, mid - 2, "PRESS REC", L, Gfx::kSmall);
+        if((frame_ / 8) % 2 == 0)
+            g_.FillRect(88, mid - 2, 3, 5, W);
+    }
+}
+
+// =============================================================================
+// GRAINS: a cat, a bench and a street lamp in the rain
+//
+//   every active grain   = one raindrop (so GRAINS = how hard it rains)
+//   grain pan            = where the drop falls; SPREAD 0 = a single column of
+//                          rain over the bench, 100% = the whole street
+//   grain age            = how far it has fallen; it splashes as it ends
+//   grain envelope level = white streak when loud, fading to grey when quiet
+//   SPRAY                = gusts of wind that slant the rain
+//   SIZE (SHIFT)         = length of the streaks
+//   GRAINS = 0           = dry night; the cat sleeps curled up on the bench
+//   GRAINS > 0           = the cat wakes, hops down and hides under the bench
+// =============================================================================
+
+// ---- Scene geometry (logical pixels) ------------------------------------------
+static constexpr int kFloor    = 79; // where feet touch the pavement
+static constexpr int kPaveBack = 72; // back edge of the pavement
+static constexpr int kPaveEdge = 81; // front kerb edge
+static constexpr int kSkyTop   = 20; // just under the cloud
+static constexpr int kBenchL   = 47; // seat ends
+static constexpr int kBenchR   = 93;
+static constexpr int kSeatTop  = 64; // top of the seat plank
+static constexpr int kBenchMid = (kBenchL + kBenchR) / 2;
+
+// ---- Sprites ('#' = white; '.' inside the outline is painted black) -----------
+
+// Sitting cat, front view, 13 x 20. Rows 0-1 ears, row 4 eyes.
+static const char* const kCatSit[20] = {
+    "..#.......#..",
+    "..##.....##..",
+    "..#########..",
+    ".###########.",
+    ".###.###.###.",
+    ".###########.",
+    ".#####.#####.",
+    "..#########..",
+    "...#######...",
+    "...#######...",
+    "..#########..",
+    ".###########.",
+    ".###########.",
+    "#############",
+    "#############",
+    "#############",
+    "#####.#.#####",
+    "#####.#.#####",
+    "#####.#.#####",
+    ".####.#.####.",
+};
+static constexpr int kSitW = 13, kSitH = 20;
+
+// Curled up asleep, side view, 16 x 8: head tucked on the left (closed eye
+// on row 3), back curving to the right, tail wrapped along the front.
+static const char* const kCatCurl[8] = {
+    "..#..#..........",
+    "..####...#####..",
+    ".######.#######.",
+    ".#..###########.",
+    ".##############.",
+    "################",
+    "###.........####",
+    ".##############.",
+};
+// Same pose mid-breath: back rises by a pixel
+static const char* const kCatCurlIn[8] = {
+    "..#..#...####...",
+    "..####..######..",
+    ".######.#######.",
+    ".#..###########.",
+    ".##############.",
+    "################",
+    "###.........####",
+    ".##############.",
+};
+static constexpr int kCurlW = 16, kCurlH = 8;
+
+// "Loaf": crouched, paws tucked, front view, 13 x 9. Fits under the bench.
+static const char* const kCatLoaf[9] = {
+    "..#.......#..",
+    "..##.....##..",
+    "..#########..",
+    ".###.###.###.",
+    ".###########.",
+    ".#####.#####.",
+    "#############",
+    "#############",
+    ".###########.",
+};
+static const char* const kCatLoafBlink[9] = {
+    "..#.......#..",
+    "..##.....##..",
+    "..#########..",
+    ".###########.",
+    ".##..###..##.",
+    ".#####.#####.",
+    "#############",
+    "#############",
+    ".###########.",
+};
+static constexpr int kLoafW = 13, kLoafH = 9;
+
+void Ui::DrawSprite(const char* const* rows, int h, int x, int y)
+{
+    for(int r = 0; r < h; r++)
+    {
+        const char* row   = rows[r];
+        int         first = -1, last = -1;
+        for(int c = 0; row[c]; c++)
+            if(row[c] == '#')
+            {
+                if(first < 0)
+                    first = c;
+                last = c;
+            }
+        if(first < 0)
+            continue;
+        // Black out the span first so rain/bench don't show through gaps
+        g_.HLine(x + first, x + last, y + r, B);
+        for(int c = first; c <= last; c++)
+            if(row[c] == '#')
+                g_.Pixel(x + c, y + r, W);
+    }
+}
+
+// eyes: 0 = open, 1 = closed
+void Ui::DrawCatSitting(int x, int y, int eyes, bool ears_flat, float tail_sway)
+{
+    // Tail first, so the body overlaps its root: a 2px curve that rises to
+    // the right and swishes at the tip.
+    for(int i = 0; i < 12; i++)
+    {
+        float k  = i / 11.f;
+        int   tx = x + kSitW - 1 + int(i * 0.6f + tail_sway * k * k * 4.f);
+        int   ty = y + kSitH - 2 - int(i * 0.9f);
+        g_.Pixel(tx, ty, W);
+        g_.Pixel(tx + 1, ty, W);
+    }
+    const char* rows[kSitH];
+    for(int r = 0; r < kSitH; r++)
+        rows[r] = kCatSit[r];
+    if(ears_flat) // ears pinned back in the rain
+    {
+        rows[0] = ".............";
+        rows[1] = ".##.......##.";
+    }
+    if(eyes)
+    {
+        rows[4] = ".###########.";
+        rows[5] = ".##..#.#..##.";
+    }
+    DrawSprite(rows, kSitH, x, y);
+}
+
+void Ui::DrawLamp()
+{
+    // Street lamp on the left: post, arm and lamp head (no light cone)
+    const int px = 12, top = 24;
+    g_.VLine(px, top, kFloor, M);
+    g_.VLine(px + 1, top, kFloor, D);
+    g_.HLine(px, px + 6, top, M);
+    g_.FillRect(px + 5, top, 5, 3, L);
+    g_.HLine(px + 6, px + 8, top + 3, W); // the bulb
+    g_.HLine(px - 2, px + 3, kFloor, M);  // base
+}
+
+void Ui::DrawPavement()
+{
+    // A flat pavement seen slightly from above: dotted back edge, slab joints
+    // fanning out in perspective, solid kerb edge, then the kerb face.
+    g_.FillRect(0, kPaveBack, kSW, kPaveEdge - kPaveBack, D); // slabs
+    g_.HLine(0, kSW - 1, kPaveBack, M);
+    g_.HLine(0, kSW - 1, (kPaveBack + kPaveEdge) / 2, M, true);
+    for(int k = -6; k <= 6; k++)
+    {
+        int xb = 70 + k * 13; // joint at the back
+        int xf = 70 + k * 17; // same joint at the front (wider = closer)
+        g_.Line(xb, kPaveBack, xf, kPaveEdge, M, 2);
+    }
+    g_.HLine(0, kSW - 1, kPaveEdge, L);           // kerb edge
+    g_.FillRect(0, kPaveEdge + 1, kSW, 3, D);     // kerb face
+    g_.HLine(0, kSW - 1, kPaveEdge + 3, M, true);
+}
+
+void Ui::DrawBench()
+{
+    // Park bench, front view: two backrest slats, seat plank, armrests, legs
+    // Wood in mid/light grey so the white cat stands out against it
+    const int l = kBenchL, r = kBenchR;
+    g_.VLine(l + 3, 50, kSeatTop, M); // backrest posts
+    g_.VLine(r - 3, 50, kSeatTop, M);
+    g_.HLine(l + 3, r - 3, 51, M); // slats: lit top edge, darker body
+    g_.HLine(l + 3, r - 3, 52, D);
+    g_.HLine(l + 3, r - 3, 56, M);
+    g_.HLine(l + 3, r - 3, 57, D);
+    g_.HLine(l, r, kSeatTop, L); // seat
+    g_.HLine(l, r, kSeatTop + 1, M);
+    g_.HLine(l + 1, r - 1, kSeatTop + 2, D); // seat front edge
+    g_.HLine(l - 1, l + 3, 60, M); // armrests
+    g_.VLine(l - 1, 60, kSeatTop, M);
+    g_.HLine(r - 3, r + 1, 60, M);
+    g_.VLine(r + 1, 60, kSeatTop, M);
+    const int legs[2] = {l + 2, r - 3};
+    for(int x : legs) // legs, 2px wide, with feet
+    {
+        g_.VLine(x, kSeatTop + 2, kFloor, M);
+        g_.VLine(x + 1, kSeatTop + 2, kFloor, D);
+        g_.HLine(x - 1, x + 2, kFloor, M);
+    }
+}
+
+void Ui::DrawCloud(int count, float spread)
+{
+    // SPREAD = how wide the cloud is; GRAINS = how thick and lumpy it gets.
+    // Overlapping puffs are drawn in three passes (edge r+1, body r, shading)
+    // so only the OUTER edge of the whole cloud gets an outline.
+    const float half  = 8.f + spread * 52.f;
+    const int   drift = int(sinf(frame_ * 0.02f) * 2.f);
+    const int   rows  = count >= 16 ? 3 : (count >= 6 ? 2 : 1);
+    struct Puff
+    {
+        int x, y, r;
+    } puffs[64];
+    int n = 0;
+    for(int row = 0; row < rows && n < 64; row++)
+    {
+        float row_half = half - row * 4.f; // lower rows are a bit narrower
+        for(float x = -row_half; x <= row_half && n < 64; x += 6.f)
+        {
+            int i      = n * 7 + row * 3;
+            puffs[n++] = {70 + drift + int(x) + (row % 2) * 3, 14 + row * 3, 4 + (i % 3)};
+        }
+    }
+    for(int pass = 0; pass < 3; pass++)
+        for(int i = 0; i < n; i++)
+        {
+            const Puff& p = puffs[i];
+            if(pass == 0)
+                g_.FillCircle(p.x, p.y, p.r + 1, M); // outer edge
+            else if(pass == 1)
+                g_.FillCircle(p.x, p.y, p.r, D);     // body
+            else
+                g_.FillCircle(p.x, p.y + 1, p.r - 2, B, true); // dark underside
+        }
+}
+
+void Ui::DrawNight()
+{
+    // No grains: clear night, crescent moon, twinkling stars
+    g_.FillCircle(116, 22, 6, W);
+    g_.FillCircle(119, 20, 6, B);
+    static const int stars[6][2] = {{30, 18}, {48, 28}, {88, 16}, {100, 34}, {60, 22}, {130, 40}};
+    for(int i = 0; i < 6; i++)
+        g_.Pixel(stars[i][0], stars[i][1], ((frame_ / 10) + i) % 4 == 0 ? M : L);
+}
+
+// ---- The cat's routine ---------------------------------------------------------
+void Ui::UpdateCat(bool raining)
+{
+    auto go = [this](CatState s) {
+        cat_state_ = s;
+        cat_t_     = 0;
+    };
+    cat_t_++;
+    switch(cat_state_)
+    {
+        case kSleeping:
+            if(raining)
+                go(kWaking);
+            break;
+        case kWaking:
+            if(cat_t_ >= 14)
+                go(raining ? kJumpDown : kSettling);
+            break;
+        case kJumpDown:
+            if(cat_t_ >= 12)
+                go(kCrawlIn);
+            break;
+        case kCrawlIn:
+            if(cat_t_ >= 22)
+                go(kHiding);
+            break;
+        case kHiding:
+            if(!raining)
+                go(kCrawlOut);
+            break;
+        case kCrawlOut:
+            if(cat_t_ >= 22)
+                go(kJumpUp);
+            break;
+        case kJumpUp:
+            if(cat_t_ >= 12)
+                go(kSettling);
+            break;
+        case kSettling:
+            if(cat_t_ >= 16)
+                go(raining ? kWaking : kSleeping);
+            break;
+    }
+}
+
+void Ui::DrawCatActor(int count)
+{
+    // Key positions (sprite top-left corners)
+    const int sit_bench_x = kBenchMid - kSitW / 2, sit_bench_y = kSeatTop - kSitH;
+    const int sit_side_x  = kBenchR + 6, sit_side_y = kFloor - kSitH + 1;
+    const int loaf_out_x  = sit_side_x, loaf_in_x = kBenchMid - kLoafW / 2;
+    const int loaf_y      = kFloor - kLoafH + 1;
+    const float sway      = sinf(frame_ * (0.06f + count * 0.006f));
+    const bool  blink     = frame_ % 90 < 4;
+
+    auto ease = [](float t) { return t * t * (3.f - 2.f * t); }; // smoothstep
+    auto hop  = [&](float t, int x0, int y0, int x1, int y1) {
+        // Parabolic jump between two sitting positions
+        int x = x0 + int((x1 - x0) * t);
+        int y = y0 + int((y1 - y0) * t) - int(10.f * 4.f * t * (1.f - t));
+        DrawCatSitting(x, y, 0, true, 0.f);
+    };
+
+    switch(cat_state_)
+    {
+        case kSleeping:
+        {
+            bool in = (frame_ / 24) % 2 == 0; // slow breathing
+            int  x  = kBenchMid - kCurlW / 2;
+            DrawSprite(in ? kCatCurlIn : kCatCurl, kCurlH, x, kSeatTop - kCurlH);
+            for(int k = 0; k < 3; k++) // floating Z's
+            {
+                float ph = fmodf(frame_ * 0.015f + k / 3.f, 1.f);
+                g_.Text(x + 4 + int(ph * 10.f), kSeatTop - 14 - int(ph * 24.f), "Z", ph < 0.6f ? L : M, Gfx::kSmall);
+            }
+            break;
+        }
+        case kWaking:
+        case kSettling:
+            // Sitting up on the bench; looks around (blinks) before moving
+            DrawCatSitting(sit_bench_x, sit_bench_y, (cat_t_ / 5) % 2, count > 0, sway);
+            break;
+        case kJumpDown:
+            hop(ease(cat_t_ / 12.f), sit_bench_x, sit_bench_y, sit_side_x, sit_side_y);
+            break;
+        case kJumpUp:
+            hop(ease(cat_t_ / 12.f), sit_side_x, sit_side_y, sit_bench_x, sit_bench_y);
+            break;
+        case kCrawlIn:
+        case kCrawlOut:
+        {
+            float t = ease(cat_t_ / 22.f);
+            if(cat_state_ == kCrawlOut)
+                t = 1.f - t;
+            int x = loaf_out_x + int((loaf_in_x - loaf_out_x) * t);
+            int y = loaf_y + ((cat_t_ / 3) % 2); // little creeping bob
+            DrawSprite(kCatLoaf, kLoafH, x, y);
+            break;
+        }
+        case kHiding:
+            DrawSprite(blink ? kCatLoafBlink : kCatLoaf, kLoafH, loaf_in_x, loaf_y);
+            break;
+    }
+}
+
+void Ui::DrawGrains(const UiState& s)
+{
+    const Params& p       = *s.params;
+    const int     count   = int(p.grains + 0.5f);
+    const bool    raining = count > 0;
+
+    UpdateCat(raining);
+
+    if(!raining)
+    {
+        DrawNight();
+        g_.Chip(2, 13, "TAPE MODE", Gfx::kSmall);
+    }
+
+    DrawPavement();
+    DrawLamp();
+    DrawBench();
+
+    // ---- Rain: one drop per active grain ---------------------------------------------
+    const float  gust   = p.spray * 6.f * sinf(frame_ * 0.06f); // SPRAY = wind
+    const int    streak = 2 + int(p.grain_size / 0.5f * 8.f);   // SIZE = streak
+    const Grain* gr     = s.cloud->Grains();
+    struct Splash
+    {
+        int x, y;
+    } splashes[GrainCloud::kMaxGrains];
+    int n_splash = 0;
+
+    // Cat out in the open (on the bench or jumping) gets rained on too
+    const bool cat_on_bench = cat_state_ == kWaking || cat_state_ == kSettling;
+
+    if(raining)
+    {
+        for(int i = 0; i < GrainCloud::kMaxGrains; i++)
+        {
+            const Grain& g = gr[i];
+            if(!g.active)
+                continue;
+            float amp = env_->Lookup(g.env, g.phase);
+            int   x0  = 70 + int(g.pan * 62.f);
+            // Where does this drop land? Cat's head, the bench seat or the
+            // pavement (at a depth that varies per grain, for perspective).
+            int surface = kFloor - 1 - (i * 5) % 6;
+            if(cat_on_bench && abs(x0 - kBenchMid) <= 5)
+                surface = kSeatTop - kSitH + 1;
+            else if(x0 >= kBenchL && x0 <= kBenchR)
+                surface = kSeatTop - 1;
+            if(g.phase > 0.88f) // about to end: splash
+            {
+                splashes[n_splash++] = {x0 + int(gust), surface};
+                continue;
+            }
+            int y      = kSkyTop + int(g.phase * float(surface - kSkyTop));
+            int x      = x0 + int(gust * g.phase);
+            int dx     = gust > 1.f ? -1 : (gust < -1.f ? 1 : 0); // trails into the wind
+            int y_tail = y - streak < kSkyTop ? kSkyTop : y - streak;
+            uint16_t c = amp > 0.6f ? W : (amp > 0.3f ? L : M); // loud = bright
+            g_.Line(x, y, x + dx * (y - y_tail) / 2, y_tail, c);
+        }
+    }
+
+    DrawCatActor(count);
+
+    for(int i = 0; i < n_splash; i++) // splashes on top of everything
+    {
+        int x = splashes[i].x, y = splashes[i].y;
+        g_.Pixel(x - 1, y - 1, L);
+        g_.Pixel(x + 1, y - 1, L);
+        g_.Pixel(x - 2, y - 2, M);
+        g_.Pixel(x + 2, y - 2, M);
+    }
+
+    if(raining)
+        DrawCloud(count, p.spread);
+}
+
+// =============================================================================
+// FX: filter response (left) | reverb rings (right)
+// =============================================================================
+void Ui::DrawFx(const UiState& s)
+{
+    const Params& p = *s.params;
+
+    // ---- Filter -----------------------------------------------------------------
+    g_.Chip(1, 13, "FILTER", Gfx::kSmall);
+    const int top = 25, bot = 83, x0 = 3, w = 82;
+    for(int gx = x0 + 20; gx < x0 + w; gx += 21)
+        g_.VLine(gx, top, bot, D);
+    g_.HLine(x0, x0 + w, 45, D);
+
+    const float q    = 0.7f + p.reso * 4.f;
+    int         prev = 0;
+    for(int x = 0; x <= w; x++)
+    {
+        float xq  = float(x) / w;
+        float wn  = powf(10.f, (xq - p.cutoff) * 2.2f);
+        float mag = 1.f / sqrtf((1.f - wn * wn) * (1.f - wn * wn) + (wn / q) * (wn / q));
+        float db  = fmaxf(-36.f, fminf(12.f, 20.f * log10f(mag)));
+        int   y   = top + int((12.f - db) / 48.f * float(bot - top));
+        if(y < bot) // area under the curve: mid grey near the line, dark below
+        {
+            g_.VLine(x0 + x, y + 1, y + 3 < bot ? y + 3 : bot, M);
+            if(y + 4 < bot)
+                g_.VLine(x0 + x, y + 4, bot, D);
+        }
+        if(x > 0)
+            g_.Line(x0 + x - 1, prev, x0 + x, y, W);
+        prev = y;
+    }
+    g_.HLine(x0, x0 + w, bot, M);
+    int cx = x0 + int(p.cutoff * w); // cutoff marker
+    for(int y = top; y < bot; y += 2)
+        g_.Pixel(cx, y, L);
+
+    g_.VLine(89, kBodyTop, kBodyBot, D); // divider
+
+    // ---- Space (reverb) ---------------------------------------------------------------
+    g_.Chip(92, 13, "SPACE", Gfx::kSmall);
+    g_.SetClip(91, 23, kSW - 1, kBodyBot);
+    const int   ccx = 115, ccy = 53;
+    const float max_r = 6.f + p.rev_size * 22.f; // SIZE = how far rings travel
+    for(int r = 0; r < 4; r++)
+    {
+        float ph  = fmodf(frame_ * 0.9f + r * 25.f, 100.f) / 100.f;
+        int   rad = 3 + int(ph * max_r);
+        float b   = (1.f - ph) * (0.35f + p.rev_mix); // MIX = how bright
+        if(b > 0.6f) // rings fade white → light → mid → dark grey
+            g_.Circle(ccx, ccy, rad, W);
+        else if(b > 0.35f)
+            g_.Circle(ccx, ccy, rad, L);
+        else if(b > 0.18f)
+            g_.Circle(ccx, ccy, rad, M);
+        else if(b > 0.05f)
+            g_.Circle(ccx, ccy, rad, D);
+    }
+    g_.SetClip(0, kBodyTop - 1, kSW - 1, kBodyBot);
+    g_.FillRect(ccx - 1, ccy - 1, 3, 3, W);
+    g_.Pixel(ccx, ccy, B);
+}
+
+// =============================================================================
+// Readouts: 2x2, same arrangement as the encoders
+// =============================================================================
+void Ui::DrawEnvGlyph(int right, int y, int shape, int w, int h)
+{
+    // The envelope's shape instead of its name: a small curve on a baseline
+    int x0   = right - w + 1;
+    int base = y + h - 1;
+    int prev = base;
+    for(int x = 0; x < w; x++)
+    {
+        int yy = base - int(env_->Lookup(shape, float(x) / (w - 1)) * (h - 1) + 0.5f);
+        if(x > 0)
+            g_.Line(x0 + x - 1, prev, x0 + x, yy, W);
+        prev = yy;
+    }
+}
+
+void Ui::DrawReadouts(const UiState& s)
+{
+    g_.HLine(0, kSW - 1, kReadLine, D);
+    const TapeLoop& t = *s.tape;
+    for(int i = 0; i < 4; i++)
+    {
+        const ParamDesc* alt = s.shift ? ShiftParam(s.page, i) : nullptr;
+        const ParamDesc& d   = alt ? *alt : kPageParams[int(s.page)][i];
+        float            v   = s.params->*(d.field);
+        int              x   = 2 + (i % 2) * 70;
+        int              y   = kReadTop + (i / 2) * 11;
+        int              right = x + kCellW - 1;
+
+        if(alt) // SHIFT-layer parameter label is shown inverted
+            g_.Chip(x - 1, y - 1, d.label, Gfx::kSmall);
+        else
+            g_.Text(x, y + 1, d.label, L, Gfx::kSmall);
+
+        if(d.format == Format::EnvName)
+            DrawEnvGlyph(right, y, int(lroundf(v)), 22, 7);
+        else
+        {
+            char buf[12];
+            if(d.format == Format::Seconds)
+            {
+                float secs = 0.f;
+                if(t.HasLoop())
+                    secs = (d.field == &Params::start ? t.RegionStart() : t.RegionLength())
+                           / s.sample_rate;
+                FormatValue(d, secs, 1.f, buf, sizeof(buf));
+            }
+            else
+                FormatValue(d, v, 1.f, buf, sizeof(buf));
+            g_.TextRight(right, y, buf, W, Gfx::kBig);
+        }
+
+        // Value bar: dark track, light fill
+        float norm = (v - d.min) / (d.max - d.min);
+        g_.HLine(x, right, y + 8, D);
+        g_.HLine(x, x + int(norm * (kCellW - 1)), y + 8, L);
+    }
+}
+
+// ---- Footer tabs: selected tab is an inverted chip ----------------------------------
+void Ui::DrawFooter(const UiState& s)
+{
+    g_.HLine(0, kSW - 1, kFootLine, D);
+    const int gap   = 12;
+    int       total = 0;
+    for(auto n : kPageNames)
+        total += Gfx::TextWidth(n, Gfx::kSmall) + gap;
+    total -= gap;
+    int x = kSW / 2 - total / 2;
+    for(int i = 0; i < kNumPages; i++)
+    {
+        const char* n = kPageNames[i];
+        if(i == int(s.page))
+            g_.Chip(x - 2, kFootLine + 1, n, Gfx::kSmall);
+        else
+            g_.Text(x, kFootLine + 3, n, M, Gfx::kSmall);
+        x += Gfx::TextWidth(n, Gfx::kSmall) + gap;
+    }
+
+    // Hold SHIFT to see the audio CPU load: peak (last second) on the left,
+    // average on the right. Inverted when the safety valve is limiting grains.
+    if(s.shift)
+    {
+        char buf[12];
+        auto pct = [&buf](const char* tag, float v) {
+            int n   = 0;
+            int p   = int(v * 100.f + 0.5f);
+            p       = p > 999 ? 999 : p;
+            for(; *tag; tag++)
+                buf[n++] = *tag;
+            if(p >= 100)
+                buf[n++] = char('0' + p / 100);
+            if(p >= 10)
+                buf[n++] = char('0' + (p / 10) % 10);
+            buf[n++] = char('0' + p % 10);
+            buf[n++] = '%';
+            buf[n]   = 0;
+            return buf;
+        };
+        g_.Text(2, kFootLine + 3, pct("PK", s.cpu_peak), L, Gfx::kSmall);
+        const char* avg = pct("CPU", s.cpu_avg);
+        if(s.throttled)
+            g_.Chip(kSW - Gfx::TextWidth(avg, Gfx::kSmall) - 4, kFootLine + 1, avg, Gfx::kSmall);
+        else
+            g_.TextRight(kSW - 2, kFootLine + 3, avg, L, Gfx::kSmall);
+    }
+}
+
+// =============================================================================
+// SAMPLE BROWSER
+//
+//   Root   : three folder tiles side by side (FACTORY · RECORDINGS · USER)
+//   Folder : BACK row + scrolling list of samples with their lengths
+//   Info   : the readout area describes whatever is highlighted
+//   Hints  : the footer shows what turn / push / T1 will do right now
+// =============================================================================
+
+// [T1] chip: filled when the track is selected, outlined until then
+void Ui::DrawTrackChip(const UiState& s)
+{
+    if(s.t2_selected)
+    {
+        g_.FillRect(0, 0, 13, 11, W);
+        g_.Text(1, 2, "T2", B, Gfx::kBig);
+    }
+    else if(s.track_selected)
+    {
+        g_.FillRect(0, 0, 13, 11, W);
+        g_.Text(1, 2, "T1", B, Gfx::kBig);
+    }
+    else
+    {
+        g_.Rect(0, 0, 13, 11, M);
+        g_.Text(1, 2, "T1", L, Gfx::kBig);
+    }
+}
+
+void Ui::DrawMask(const char* const* rows, int h, int x, int y, uint16_t c)
+{
+    for(int r = 0; r < h; r++)
+        for(int col = 0; rows[r][col]; col++)
+            if(rows[r][col] == '#')
+                g_.Pixel(x + col, y + r, c);
+}
+
+// Folder emblems, 7 x 7: a star for FACTORY, a record dot for RECORDINGS,
+// a person for USER
+static const char* const kEmblems[3][7] = {
+    {"...#...", "..###..", "#######", ".#####.", "..###..", ".##.##.", "#.....#"},
+    {"..###..", ".#####.", "##...##", "##...##", "##...##", ".#####.", "..###.."},
+    {"..###..", "..###..", "..###..", ".......", ".#####.", "#######", "#######"},
+};
+
+// 26 x 20 pixel-art folder with its emblem
+void Ui::DrawFolderIcon(int x, int y, int folder, bool selected)
+{
+    const uint16_t edge = selected ? W : M;
+    const uint16_t body = selected ? W : D;
+    const uint16_t mark = selected ? B : M;
+    // Tab
+    g_.FillRect(x + 1, y, 10, 3, body);
+    g_.HLine(x + 1, x + 10, y, edge);
+    g_.Pixel(x + 11, y + 1, edge);
+    g_.Pixel(x, y + 1, edge);
+    // Body
+    g_.FillRect(x, y + 3, 26, 17, body);
+    g_.Rect(x, y + 3, 26, 17, edge);
+    // Back sheet peeking out (a "paper" edge)
+    g_.HLine(x + 3, x + 22, y + 5, selected ? L : M);
+    // Emblem
+    DrawMask(kEmblems[folder], 7, x + 10, y + 9, mark);
+}
+
+void Ui::DrawFolderTiles(const Browser& b)
+{
+    const SampleLibrary& lib = *b.library();
+    for(int f = 0; f < SampleLibrary::kFolders; f++)
+    {
+        const bool sel = f == b.cursor();
+        const int  x = 1 + f * 46, y = 15, w = 45, h = 64;
+
+        if(sel)
+        {
+            g_.FillRoundRect(x, y, w, h, D);
+            g_.RoundRect(x, y, w, h, W);
+            g_.RoundRect(x + 1, y + 1, w - 2, h - 2, W);
+        }
+        else
+            g_.RoundRect(x, y, w, h, D);
+
+        // Selected folder bobs gently
+        int bob = sel && (frame_ / 12) % 2 == 0 ? -1 : 0;
+        DrawFolderIcon(x + 10, y + 10 + bob, f, sel);
+
+        g_.TextCentered(x + w / 2, y + 38, lib.FolderName(f), sel ? W : L, Gfx::kSmall);
+
+        // File count
+        char buf[12];
+        int  n = lib.Count(f);
+        if(n == 0)
+            g_.TextCentered(x + w / 2, y + 47, "EMPTY", sel ? L : M, Gfx::kSmall);
+        else
+        {
+            int k = 0;
+            if(n >= 10)
+                buf[k++] = char('0' + (n / 10) % 10);
+            buf[k++] = char('0' + n % 10);
+            buf[k++] = ' ';
+            const char* word = n == 1 ? "FILE" : "FILES";
+            for(; *word; word++)
+                buf[k++] = *word;
+            buf[k] = 0;
+            g_.TextCentered(x + w / 2, y + 47, buf, sel ? L : M, Gfx::kSmall);
+        }
+
+        // Pointer under the selected tile
+        if(sel)
+            for(int i = 0; i < 3; i++)
+                g_.HLine(x + w / 2 - i, x + w / 2 + i, y + h + 2 + i, W);
+    }
+}
+
+// Seconds as "6.4S" (one decimal) — no printf, to save flash
+static void FormatSeconds(float sec, char* out)
+{
+    int t = int(sec * 10.f + 0.5f);
+    int k = 0;
+    if(t >= 1000)
+        out[k++] = char('0' + (t / 1000) % 10);
+    if(t >= 100)
+        out[k++] = char('0' + (t / 100) % 10);
+    out[k++] = char('0' + (t / 10) % 10);
+    out[k++] = '.';
+    out[k++] = char('0' + t % 10);
+    out[k++] = 'S';
+    out[k]   = 0;
+}
+
+void Ui::DrawSampleList(const Browser& b)
+{
+    const SampleLibrary& lib   = *b.library();
+    const int            f     = b.folder();
+    const int            items = b.Items();
+    const int            top   = 14, rowh = 11, x0 = 1, w = 132;
+
+    for(int r = 0; r < Browser::kVisibleRows; r++)
+    {
+        int item = b.scroll() + r;
+        if(item >= items)
+            break;
+        const int  y   = top + r * rowh;
+        const bool sel = item == b.cursor();
+        if(sel)
+            g_.FillRect(x0, y, w, rowh - 1, W);
+
+        if(item == 0) // BACK row
+        {
+            uint16_t c = sel ? B : M;
+            for(int i = 0; i < 3; i++) // little left arrow
+                g_.VLine(x0 + 3 + i, y + 4 - i, y + 4 + i, c);
+            g_.Text(x0 + 9, y + 1, "BACK", c, Gfx::kBig);
+            continue;
+        }
+
+        const SampleInfo& smp = lib.Sample(f, item - 1);
+        g_.Text(x0 + 3, y + 1, smp.name, sel ? B : W, Gfx::kBig);
+        char len[8];
+        FormatSeconds(smp.seconds, len);
+        g_.TextRight(x0 + w - 3, y + 2, len, sel ? B : M, Gfx::kSmall);
+        if(!sel) // faint separator between rows
+            g_.HLine(x0 + 3, x0 + w - 3, y + rowh - 1, D);
+    }
+
+    // Empty folder: say what to do about it
+    if(lib.Count(f) == 0)
+    {
+        const char* line2 = f == 1 ? "RECORD A LOOP TO" : "ADD WAV FILES TO";
+        const char* line3 = f == 1 ? "SAVE IT HERE" : "/USER ON THE SD CARD";
+        g_.TextCentered(68, 40, "NOTHING HERE YET", L, Gfx::kBig);
+        g_.TextCentered(68, 54, line2, M, Gfx::kSmall);
+        g_.TextCentered(68, 61, line3, M, Gfx::kSmall);
+    }
+
+    // Scroll bar
+    const int track_top = top, track_h = Browser::kVisibleRows * rowh - 1;
+    g_.VLine(136, track_top, track_top + track_h - 1, D);
+    if(items > Browser::kVisibleRows)
+    {
+        int thumb_h = track_h * Browser::kVisibleRows / items;
+        int thumb_y = track_top + (track_h - thumb_h) * b.scroll() / (items - Browser::kVisibleRows);
+        g_.VLine(136, thumb_y, thumb_y + thumb_h - 1, L);
+        g_.VLine(137, thumb_y, thumb_y + thumb_h - 1, L);
+    }
+}
+
+// The readout area becomes an info panel for the highlighted item
+void Ui::DrawBrowserInfo(const Browser& b)
+{
+    const SampleLibrary& lib = *b.library();
+    g_.HLine(0, kSW - 1, kReadLine, D);
+
+    auto cell = [this](int i, const char* label, const char* value) {
+        int x = 2 + (i % 2) * 70, y = kReadTop + (i / 2) * 11;
+        g_.Text(x, y + 1, label, L, Gfx::kSmall);
+        // Values that would collide with the label drop to the small font
+        int room = kCellW - Gfx::TextWidth(label, Gfx::kSmall) - 4;
+        if(Gfx::TextWidth(value, Gfx::kBig) <= room)
+            g_.TextRight(x + kCellW - 1, y, value, W, Gfx::kBig);
+        else
+            g_.TextRight(x + kCellW - 1, y + 1, value, W, Gfx::kSmall);
+        g_.HLine(x, x + kCellW - 1, y + 8, D);
+    };
+
+    char a[12], c[12];
+    if(b.level() == Browser::kRoot)
+    {
+        int   f     = b.cursor();
+        float total = 0.f;
+        for(int i = 0; i < lib.Count(f); i++)
+            total += lib.Sample(f, i).seconds;
+        int n = lib.Count(f), k = 0;
+        if(n >= 10)
+            a[k++] = char('0' + (n / 10) % 10);
+        a[k++] = char('0' + n % 10);
+        a[k]   = 0;
+        FormatSeconds(total, c);
+        cell(0, "FILES", a);
+        cell(1, "TOTAL", n ? c : "-");
+        cell(2, "SOURCE", f == 0 ? "BUILT IN" : "SD CARD");
+        cell(3, "LOADS TO", "T1");
+    }
+    else if(b.cursor() == 0)
+    {
+        cell(0, "BACK TO", "FOLDERS");
+        cell(1, "IN", lib.FolderName(b.folder()));
+    }
+    else
+    {
+        const SampleInfo& smp = lib.Sample(b.folder(), b.cursor() - 1);
+        FormatSeconds(smp.seconds, a);
+        cell(0, "LENGTH", a);
+        cell(1, "CHANNELS", smp.stereo ? "STEREO" : "MONO");
+        cell(2, "FITS TAPE", smp.seconds <= 60.f ? "YES" : "TRIMMED");
+        cell(3, "LOADS TO", "T1");
+    }
+}
+
+// Footer: what each control does right now, keys bright, actions dim
+void Ui::DrawBrowserHints(const Browser& b)
+{
+    g_.HLine(0, kSW - 1, kFootLine, D);
+    const char* push = "OPEN";
+    if(b.level() == Browser::kFolder)
+        push = b.cursor() == 0 ? "BACK" : "LOAD";
+    const char* keys[3]    = {"TURN", "PUSH", "T1"};
+    const char* actions[3] = {"MOVE", push, "EXIT"};
+    int         total      = 0;
+    for(int i = 0; i < 3; i++)
+        total += Gfx::TextWidth(keys[i], Gfx::kSmall) + Gfx::TextWidth(actions[i], Gfx::kSmall) + 4 + 10;
+    total -= 10;
+    int x = kSW / 2 - total / 2;
+    for(int i = 0; i < 3; i++)
+    {
+        x = g_.Text(x, kFootLine + 3, keys[i], W, Gfx::kSmall) + 3;
+        x = g_.Text(x, kFootLine + 3, actions[i], M, Gfx::kSmall) + 10;
+    }
+}
+
+void Ui::DrawBrowser(const UiState& s)
+{
+    const Browser&       b   = *s.browser;
+    const SampleLibrary& lib = *b.library();
+
+    // Header: [T1]  SAMPLES  or  [T1]  FACTORY   3/12
+    DrawTrackChip(s);
+    g_.Text(16, 2, b.level() == Browser::kRoot ? "SAMPLES" : lib.FolderName(b.folder()), W, Gfx::kBig);
+    if(b.level() == Browser::kFolder && lib.Count(b.folder()) > 0)
+    {
+        char pos[8];
+        int  k = 0, cur = b.cursor(), n = lib.Count(b.folder());
+        if(cur == 0)
+            pos[k++] = '-';
+        else
+        {
+            if(cur >= 10)
+                pos[k++] = char('0' + (cur / 10) % 10);
+            pos[k++] = char('0' + cur % 10);
+        }
+        pos[k++] = '/';
+        if(n >= 10)
+            pos[k++] = char('0' + (n / 10) % 10);
+        pos[k++] = char('0' + n % 10);
+        pos[k]   = 0;
+        g_.TextRight(kSW - 2, 3, pos, L, Gfx::kSmall);
+    }
+    g_.HLine(0, kSW - 1, 11, D);
+
+    g_.SetClip(0, kBodyTop - 1, kSW - 1, kBodyBot);
+    if(b.level() == Browser::kRoot)
+        DrawFolderTiles(b);
+    else
+        DrawSampleList(b);
+    g_.ResetClip();
+
+    DrawBrowserInfo(b);
+    DrawBrowserHints(b);
+}
+
+// Loading box over the LOOP page while a sample streams in
+void Ui::DrawLoading(const UiState& s)
+{
+    const int x = 18, y = 26, w = 104, h = 38;
+    g_.FillRect(x, y, w, h, B);
+    g_.RoundRect(x, y, w, h, W);
+    g_.RoundRect(x + 1, y + 1, w - 2, h - 2, M);
+    g_.TextCentered(70, y + 5, "LOADING", L, Gfx::kSmall);
+    g_.TextCentered(70, y + 13, s.load_name ? s.load_name : "", W, Gfx::kBig);
+    const int bx = x + 8, by = y + 26, bw = w - 16;
+    g_.FillRect(bx, by, bw, 5, D);
+    g_.FillRect(bx, by, int(bw * fminf(1.f, s.load_progress)), 5, W);
+}
+
+} // namespace silt
