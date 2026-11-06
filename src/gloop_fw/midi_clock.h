@@ -23,9 +23,16 @@
 
 namespace gloop
 {
-inline Uart& MidiUart()
+// The core's serial class is HardwareSerial up to 2.x and Uart from 3.0
+#if defined(STM32_CORE_VERSION_MAJOR) && STM32_CORE_VERSION_MAJOR >= 3
+using MidiPort = Uart;
+#else
+using MidiPort = HardwareSerial;
+#endif
+
+inline MidiPort& MidiUart()
 {
-    static Uart uart(PB_7_ALT1, PB_6_ALT2); // USART1: RX D14, TX D13
+    static MidiPort uart(PB_7_ALT1, PB_6_ALT2); // USART1: RX D14, TX D13
     return uart;
 }
 

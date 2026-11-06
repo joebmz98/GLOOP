@@ -6,7 +6,7 @@ Daisy Seed firmware, built with the Arduino IDE. Three tracks, each: tape looper
 
 1. **File → Preferences → Additional boards manager URLs**:
    `https://github.com/stm32duino/BoardManagerFiles/raw/main/package_stmicroelectronics_index.json`
-2. **Boards Manager** → install **STM32 MCU based boards** (STMicroelectronics).
+2. **Boards Manager** → install **STM32 MCU based boards** (STMicroelectronics). Tested with **2.12.0** (and 3.0.0).
 3. **Library Manager** → install **DaisyDuino**.
 4. Install **STM32CubeProgrammer** (for DFU upload).
 
