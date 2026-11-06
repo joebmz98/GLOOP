@@ -16,6 +16,20 @@
 // would keep changing the loop lengths, and a new tempo is only taken once
 // it has held for a beat (not every step of the glide). No clock for 0.5 s = back to GLOOP's
 // own tempo (it keeps the last MIDI BPM).
+//
+// Interrupt priority: DaisyDuino runs the audio DMA interrupt at priority 0,
+// above the UART's. While the audio callback runs (most of each 1 ms block)
+// the UART couldn't store incoming bytes, and at 31,250 baud a byte arrives
+// every 320 us, so bytes overran and were lost. RaisePriority() (called once
+// audio is running) puts the UART at 0 and audio at 1: the UART interrupt
+// only copies one byte into a buffer, so letting it cut in costs nothing.
+//
+// Diagnostics (hold SHIFT, footer): bytes per second received, and the state
+// of the D14 pin itself, sampled 48,000 times a second straight from the GPIO
+// register, independent of the UART:
+//   SIG  = the line is toggling (MIDI is reaching the pin)
+//   IDLE = always high (nothing arriving: check wiring / TRS type / source)
+//   LOW! = always low (opto output stuck on: check its supply and pull-up)
 // =============================================================================
 #pragma once
 #include <Arduino.h>
@@ -47,12 +61,40 @@ class MidiClockIn
         MidiUart().begin(31250);
     }
 
+    // After the audio has started (DaisyDuino sets its DMA priorities then)
+    void RaisePriority()
+    {
+        HAL_NVIC_SetPriority(USART1_IRQn, 0, 0);
+        HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 1, 0);
+        HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 1, 0);
+        HAL_NVIC_SetPriority(DMA1_Stream2_IRQn, 1, 0);
+        HAL_NVIC_SetPriority(DMA1_Stream3_IRQn, 1, 0);
+        HAL_NVIC_SetPriority(DMA1_Stream4_IRQn, 1, 0);
+    }
+
+    // Every audio sample: the raw level of D14 (PB7), for the diagnostics
+    inline void SampleLine()
+    {
+        lows_ += (GPIOB->IDR & GPIO_PIN_7) ? 0u : 1u;
+        samples_++;
+    }
+
     // Audio callback. now: samples since start (block start is fine)
     void Poll(uint32_t now)
     {
+        // Once a second: diagnostics
+        if(samples_ >= uint32_t(sr_))
+        {
+            line_      = lows_ == 0 ? 0 : (lows_ >= samples_ ? 2 : 1);
+            bytes_ps_  = bytes_;
+            bytes_     = 0;
+            lows_      = 0;
+            samples_   = 0;
+        }
         while(MidiUart().available() > 0)
         {
             const int b = MidiUart().read();
+            bytes_++;
             last_byte_  = now; // any MIDI at all (activity dot on screen)
             got_any_    = true;
             if(b != 0xF8)
@@ -104,6 +146,8 @@ class MidiClockIn
     // the source isn't sending clock (many only send it while playing)
     bool Activity(uint32_t now) const { return got_any_ && now - last_byte_ < uint32_t(0.1f * sr_); }
     float Bpm() const { return bpm_; }
+    uint32_t BytesPerSecond() const { return bytes_ps_; }
+    int      LineState() const { return line_; } // 0 idle high, 1 signal, 2 stuck low
 
   private:
     float    sr_     = 48000.f;
@@ -117,6 +161,9 @@ class MidiClockIn
     float    bpm_    = 120.f;
     float    pending_ = 0.f; // a new tempo waiting to prove it's steady
     int      steady_  = 0;
+    uint32_t bytes_ = 0, bytes_ps_ = 0;
+    uint32_t lows_ = 0, samples_ = 0;
+    int      line_  = 0;
 };
 
 } // namespace gloop

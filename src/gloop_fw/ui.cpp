@@ -118,7 +118,7 @@ void Ui::DrawHeader(const UiState& s)
 
     // MIDI in activity: a small dot right of the chip while bytes arrive
     if(s.midi_rx)
-        g_.FillRect(kCornerL + 15, 8, 2, 2, (frame_ / 2) % 2 ? W : M);
+        g_.FillRect(kCornerL + 15, 4, 3, 3, (frame_ / 2) % 2 ? W : M);
 
     // Holding FX: the encoders are the FX mixer, whatever the page
     if(s.enc.fx_held)
@@ -1462,12 +1462,19 @@ void Ui::DrawFooter(const UiState& s)
             return buf;
         };
         g_.Text(kCornerL, kFootLine + 3, pct("PK", s.cpu_peak), L, Gfx::kSmall);
-        char fps[8] = "FPS ";
-        const int f = s.fps > 99 ? 99 : s.fps;
-        fps[4]      = char('0' + f / 10);
-        fps[5]      = char('0' + f % 10);
-        fps[6]      = 0;
-        g_.TextCentered(kSW / 2, kFootLine + 3, fps, M, Gfx::kSmall);
+        // MIDI diagnostics: bytes per second, and what the D14 pin is doing
+        char md[16] = "MIDI ";
+        int  k = 5, b = s.midi_bps > 999 ? 999 : s.midi_bps;
+        if(b >= 100)
+            md[k++] = char('0' + b / 100);
+        if(b >= 10)
+            md[k++] = char('0' + (b / 10) % 10);
+        md[k++] = char('0' + b % 10);
+        const char* ls = s.midi_line == 1 ? " SIG" : (s.midi_line == 2 ? " LOW!" : " IDLE");
+        for(; *ls; ls++)
+            md[k++] = *ls;
+        md[k] = 0;
+        g_.TextCentered(kSW / 2, kFootLine + 3, md, s.midi_line == 1 ? L : M, Gfx::kSmall);
         const char* avg = pct("CPU", s.cpu_avg);
         if(s.throttled)
             g_.Chip(kCornerR - Gfx::TextWidth(avg, Gfx::kSmall) - 2, kFootLine + 1, avg, Gfx::kSmall);

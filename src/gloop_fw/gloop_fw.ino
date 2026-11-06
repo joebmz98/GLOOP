@@ -408,6 +408,7 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
 
     for(size_t i = 0; i < size; i++)
     {
+        midi_clock.SampleLine(); // D14 level, for the MIDI diagnostics
         const float in_l = in[0][i];
         const float in_r = in[1][i];
         in_pk            = fmaxf(in_pk, fmaxf(fabsf(in_l), fabsf(in_r)));
@@ -564,6 +565,7 @@ void setup()
 
     cpu.Init(sample_rate, kBlockSize);
     DAISY.begin(AudioCallback);
+    midi_clock.RaisePriority(); // UART above audio, so no MIDI bytes are lost
 }
 
 void loop()
@@ -615,6 +617,8 @@ void loop()
         s.grains_allowed = grains_allowed[sel];
         s.midi_sync      = midi_clock.Active();
         s.midi_rx        = midi_clock.Activity(sample_clock);
+        s.midi_bps       = int(midi_clock.BytesPerSecond());
+        s.midi_line      = midi_clock.LineState();
         {
             const float beat = 60.f / tr.params.bpm * sample_rate;
             const int32_t left = tr.count_left;

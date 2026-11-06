@@ -33,6 +33,8 @@ struct UiState
     bool              in_time   = false; // another loop is playing (grid lock)
     bool              midi_sync = false; // BPM follows MIDI clock in
     bool              midi_rx   = false; // MIDI bytes arriving (activity dot)
+    int               midi_bps  = 0;     // MIDI bytes per second (SHIFT footer)
+    int               midi_line = 0;     // D14: 0 idle high, 1 signal, 2 stuck low
     int               grains_allowed = -1; // grains this track actually gets
                                            // from the shared pool (-1: n/a)
 
