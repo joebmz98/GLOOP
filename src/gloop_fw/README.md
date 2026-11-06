@@ -18,9 +18,9 @@ Daisy Seed firmware, built with the Arduino IDE. Two tracks, each: tape looper �
 | Board part number | Daisy Seed |
 | Upload method | STM32CubeProgrammer (DFU) |
 | USB support | None (CDC adds ~12 KB of flash) |
-| Optimize | **Faster (-O2) with LTO** (79% of flash) |
+| Optimize | **Smallest (-Os default)** (77% of flash) |
 
-"Faster (-O2) with LTO" also speeds up the reverb and filter, which live in the DaisyDuino library. If flash runs out as features are added, "Smallest (-Os default)" (66%) still works well: GLOOP's own audio code switches itself to `-O2` with `#pragma GCC optimize`. "Faster/Fastest" **without** LTO overflows the 128 KB flash.
+GLOOP's own audio code (grains, tape, filter drive, chorus, resonator, reverb bus) switches itself to `-O2` with `#pragma GCC optimize`, so "Smallest" keeps it fast. "Faster (-O2) with LTO" also speeds up DaisyDuino's own reverb and filter, but it is now at **98%** of the 128 KB flash, with no room for the SD card code; use it only to compare CPU. "Faster/Fastest" **without** LTO overflows the flash.
 
 **Upload:** hold BOOT, tap RESET, release BOOT, then Upload.
 
@@ -55,7 +55,11 @@ D1–D6 are also the Seed's SD card pins: when SD loading is added, the buttons 
 |---|---|---|---|---|
 | LOOP | Start · SHIFT: **BPM** | Length (8th notes) · SHIFT: **free length** | Pitch (±24 st) | Crossfade |
 | GRAINS | Grains (0 = loop only, 1–12 = grains on top of the loop) · alt: **Size** | Spray | Spread · alt: **Grain pitch** (±24 st) | Mix (loop ↔ grains, default 50%) · alt: **Envelope** |
-| FX | Cutoff · SHIFT: **filter type** (LP / HP / BP) · page 2: **Resonator freq** (note) · page 2 + SHIFT: **Structure** | Resonance · page 2: **Brightness** · page 2 + SHIFT: **Decay** | Reverb size · page 2: **Chorus rate** | Reverb mix · page 2: **Chorus mix** · page 2 + SHIFT: **Resonator mix** |
+| FX ▪ FILTER | Cutoff | Resonance | Type (LP / HP / BP) | Drive |
+| FX ▪ CHORUS | Rate | Depth | Width | Mix |
+| FX ▪ RESONATOR | Freq (note) | Structure · hold + turn: **Bright** | Decay | Mix |
+| FX ▪ REVERB | Size | Tone | Pre-delay | Mix |
+| **Hold FX** (any page) | Filter cutoff | Chorus mix | Resonator mix | Reverb mix |
 
 Everything acts on the **selected track** (T1 or T2, shown in the header chip). The footer's bottom-left shows what the other track is doing.
 
@@ -72,18 +76,17 @@ Everything acts on the **selected track** (T1 or T2, shown in the header chip). 
 - **GRAINS 0** is just the loop; **1–12** add that many grains alongside the loop. The cloud's level is matched to the loop automatically, so changing GRAINS / SPRAY / ENV / SIZE doesn't jump the volume.
 - **MIX** (GRAINS encoder 4) balances the loop against the grains: 0% = loop only, 100% = grains only, **50% (default)** = both at -3 dB (an equal-power blend), which keeps the total about as loud as the loop on its own.
 - **Press GRAINS again** while on the GRAINS page for the **alt layer**: encoder 1 = grain **SIZE**, encoder 3 = grain **PITCH** (±24 semitones, the grains only; the loop keeps its own PITCH), encoder 4 = grain **ENVELOPE** (window shape). Their labels show inverted; press GRAINS again to go back.
-- **SHIFT + CUTOFF** switches the filter between **LP**, **HP** and **BP** (shown next to FILTER). If the filter was wide open it stays open for the new type (e.g. HP moves CUTOFF to the bottom), and pushing CUTOFF resets it to the open position for the current type. Types crossfade over 5 ms, so switching doesn't click.
-- **Press FX again** while on the FX page for **FX page 2**: a **resonator** (DaisySP's Rings-style modal resonator) and the chorus. Per track the order is **Filter → Chorus → Resonator → Reverb**. Press FX again to go back.
-  - Enc 1 **FREQ**: the note it rings at (C1–C7, shown as e.g. `A2`). Enc 2 **BRIGHT**: wood (upper overtones die fast) → glass.
-  - SHIFT + enc 1 **STRUCT**: 0–25% squeezed overtones, 25–30% harmonic (string / tube), above that stretched and inharmonic (bar, bell).
-  - SHIFT + enc 2 **DECAY**: how long it rings, from a dull knock to a ~30 s drone (DaisySP calls this "damping"; higher = rings longer).
-  - SHIFT + enc 4 **R.MIX**: resonator dry/wet. **0% = off** (the default, and it then costs no CPU); 100% = resonator only. Its level is matched to the input automatically, so DECAY and FREQ don't make the volume jump.
-  - Enc 3 / 4 **CH.RATE / CH.MIX**: the chorus (0.05–10 Hz; mix 0 = off).
-  - The chorus panel is a little choir: one silent singer at CH.MIX 0, up to eight singing at 100%, mouths opening and closing at CH.RATE.
-  - The resonator panel is a wine glass played with a wet finger: FREQ sets the water level (more water = lower note), STRUCT morphs the glass from a narrow flute (harmonic) to a wide bell-shaped bowl, BRIGHT makes it shine, DECAY sets how many sound waves ripple out. The finger only circles the rim while R.MIX is up, and the water shivers with the output.
+- **FX pages:** one effect per page. **FX** goes to the FX pages (at the one you used last); pressed again it steps **FILTER → CHORUS → RESONATOR → REVERB**, and **SHIFT + FX** steps back. Four dots next to FX in the header show which. Per track the order is **Filter → Chorus → Resonator → Reverb**, and **MIX is always encoder 4**.
+- **Hold FX and turn** = the **FX mixer**, from any page, without leaving it: encoder 1 = filter cutoff, 2 = chorus mix, 3 = resonator mix, 4 = reverb mix. The header shows **FX MIX** and the readouts switch to the mixer while FX is held. (FX acts when you *release* it, so holding it to use the mixer doesn't change page.)
+- **Hold an encoder in and turn it** for its second parameter, where it has one: on RESONATOR, encoder 2 = **BRIGHT** (also shown top right of the picture). Elsewhere hold + turn is the same as turning.
+- **Value popup:** while you turn an encoder, its name and value show large in the middle of the screen for about a second. Useful for the mixer and hold + turn, whose values aren't on the readouts.
+- **FILTER:** TYPE switches **LP / HP / BP** with a 5 ms crossfade. If the filter was wide open it stays open for the new type (e.g. HP moves CUTOFF to the bottom); SHIFT + push on CUTOFF resets it to the open position for the current type. **DRIVE** pushes the sound through a soft clip into the filter, with make-up gain so it gets grittier rather than louder (0 = clean). The picture: the response curve across the screen, shimmering with heat when driven, plus a small sine top right that squashes as DRIVE goes up.
+- **CHORUS:** RATE 0.05–10 Hz, DEPTH ±0.5–8 ms, WIDTH from mono (L and R sweep together) to widest (half a cycle apart), MIX 0 = off. The picture is a little choir: one silent singer at MIX 0 and up to eight singing at 100%; they stand further apart with WIDTH, sway more with DEPTH and sing in time with RATE.
+- **RESONATOR** (DaisySP's Rings-style modal resonator): FREQ is the note it rings at (C1–C7, e.g. `A2`); STRUCT 0–25% squeezed overtones, 25–30% harmonic (string / tube), above that stretched and inharmonic (bar, bell); DECAY from a dull knock to a ~30 s drone (DaisySP's "damping"; higher = rings longer); BRIGHT (hold encoder 2 + turn) from wood to glass; **MIX 0% = off** (the default, and then it costs no CPU). Its level is matched to the input automatically. The picture is a wine glass played with a wet finger: FREQ is the water level (more water = lower note), STRUCT morphs the glass from a narrow flute to a wide bowl, BRIGHT makes it shine, DECAY sets how many sound waves ripple out; the finger only circles the rim while MIX is up.
+- **REVERB:** SIZE (feedback), TONE (damping, 1–18 kHz: dark → bright), **PRE-DLY** (0–250 ms before the reverb starts, so the dry sound stays clear) and MIX (this track's send). SIZE, TONE and PRE-DLY are shared by both tracks (one reverb); MIX is per track. The picture is a cathedral nave: SIZE adds arches, TONE lets you see further down it, and the echo rings leave the singer after a gap set by PRE-DLY.
 - **SHIFT + T1 / T2 mutes** that track (press again to unmute). It keeps playing silently, so it stays in sync; the fade is about 4 ms so there's no click. A muted track's header chip turns dark, and the footer shows **M** next to the other track when that one is muted. Its reverb tail still rings out.
-- SHIFT + turn = fine adjust (or the alternate parameter). Push an encoder to reset its parameter.
-- Reverb **SIZE** is shared by both tracks (one reverb); each track's **MIX** is its send into it. Every other parameter is per track.
+- SHIFT + turn = fine adjust (or the alternate parameter where there is one). **SHIFT + push** resets that parameter to its default (a push on its own no longer resets, so hold + turn is safe).
+- Reverb **SIZE / TONE / PRE-DLY** and the **BPM** are shared by both tracks; every other parameter is per track.
 - Hold SHIFT to show CPU load (peak / average) and the screen frame rate (FPS) in the footer.
 
 ## Display speed
@@ -112,7 +115,7 @@ Hold SHIFT to read the audio CPU load: **PK** (worst block in the last second) a
 | `tape_loop.h` | 16-bit interleaved record buffer, record-arm with pre-roll, loop region, play head, seam crossfade |
 | `grains.h` | Grain pool (12 voices), block-based renderer, spray/spread/envelope, CPU throttle |
 | `envelopes.h` | 10 grain window lookup tables + level compensation |
-| `fx.h` | Per-track filter (LP/HP/BP), stereo chorus and modal resonator + one shared ReverbSc (idles when every MIX is 0) |
+| `fx.h` | Per-track filter (LP/HP/BP + drive), stereo chorus and modal resonator + one shared ReverbSc with pre-delay (idles when every MIX is 0) |
 | `controls.h` | Encoders/buttons → params, transport, track buttons, browser |
 | `browser.h` | Sample browser state + sample library (stand-in until SD) |
 | `params.h/.cpp` | Parameter struct, page map, value formatting |

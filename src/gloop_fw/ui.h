@@ -38,7 +38,11 @@ struct UiState
     bool            metro_active  = false; // metronome clicking
     bool            metro_enabled = true;  // SHIFT + PLAY toggles
     int             metro_beat    = 0;     // 0..3 within the bar
-    bool            grain_size_mode = false; // page button pressed twice: alt layer
+    bool            grain_size_mode = false; // GRAINS pressed twice: alt layer
+    EncoderContext  enc;                     // what each encoder edits now
+    int             fx_page      = 0;        // FxPage on the FX page
+    const ParamDesc* popup       = nullptr;  // last parameter turned
+    uint32_t        popup_age_ms = 100000;   // ...and how long ago
     bool            muted        = false; // selected track muted
     bool            other_muted  = false; // other track muted
     float           chorus_phase = 0.f;   // for the FX page 2 picture
@@ -64,6 +68,7 @@ class Ui
     void DrawGrains(const UiState& s);
     void DrawFx(const UiState& s);
     void DrawReadouts(const UiState& s);
+    void DrawPopup(const UiState& s);
     void DrawFooter(const UiState& s);
 
     // Pieces of the GRAINS street scene

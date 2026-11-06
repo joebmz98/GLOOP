@@ -62,6 +62,7 @@ static constexpr size_t kMaxBlock       = 64; // scratch buffers' size
 
 static int16_t DSY_SDRAM_BSS tape_frames[kNumTracks][kTapeFrames * 2]; // L R L R
 static daisysp::ReverbSc DSY_SDRAM_BSS reverb;
+static float DSY_SDRAM_BSS reverb_predelay[ReverbBus::kPreLen * 2]; // L R L R
 
 // ---- One track ------------------------------------------------------------------
 struct Track
@@ -221,8 +222,8 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
         tr.cloud.SetThrottle(throttled);
         tr.cloud.SetParams(count, p.grain_size, p.spray, p.spread, int(p.envelope + 0.5f), rate,
                            powf(2.f, p.grain_pitch / 12.f)); // grains-only pitch
-        tr.filter.SetParams(p.cutoff, p.reso, p.filter_type);
-        tr.chorus.SetParams(p.chorus_rate, p.chorus_mix);
+        tr.filter.SetParams(p.cutoff, p.reso, p.filter_type, p.filter_drive);
+        tr.chorus.SetParams(p.chorus_rate, p.chorus_depth, p.chorus_width, p.chorus_mix);
         tr.res.SetParams(p.res_note, p.res_bright, p.res_struct, p.res_decay, p.res_mix);
         any_send |= p.rev_mix > 0.0005f;
 
@@ -250,7 +251,8 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
         if(playing[t] && grain_mode[t])
             tr.cloud.ProcessBlock(tr.tape, tr.grain_l, tr.grain_r, size);
     }
-    reverb_bus.SetParams(tracks[0].params.rev_size, any_send); // SIZE is shared
+    const Params& rp = tracks[0].params; // SIZE / TONE / PRE-DLY are shared
+    reverb_bus.SetParams(rp.rev_size, rp.rev_tone, rp.rev_predelay, any_send);
 
     // ---- 4. Per sample: record, tape playback, filter, mix, reverb, out ----
     //
@@ -413,7 +415,7 @@ void setup()
         tracks[t].chorus.Init(sample_rate);
         tracks[t].res.Init(sample_rate);
     }
-    reverb_bus.Init(sample_rate, &reverb);
+    reverb_bus.Init(sample_rate, &reverb, reverb_predelay);
     metronome.Init(sample_rate);
     controls.Init(sample_rate / kBlockSize, sample_rate); // once per block
 
@@ -478,6 +480,10 @@ void loop()
         s.metro_beat    = metro_beat;
         s.metro_enabled = controls.metronome_on();
         s.grain_size_mode = controls.grain_size_mode();
+        s.enc          = controls.Context(); // what each encoder edits now
+        s.fx_page      = controls.fx_page();
+        s.popup        = controls.popup();
+        s.popup_age_ms = controls.popup_age_ms();
         s.muted         = controls.muted(sel);
         s.other_muted   = controls.muted(1 - sel);
         s.chorus_phase  = tr.chorus.Phase();

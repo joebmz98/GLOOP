@@ -15,10 +15,12 @@
 //    (40 Hz × 450^x ≈ 40 Hz..18 kHz) and smoothed so encoder steps don't
 //    zipper. RESO is capped below self-oscillation.
 //  * ReverbBus: ONE ReverbSc shared by both tracks (it's one of the most
-//    expensive things in GLOOP). Each track's MIX is its send level; SIZE is
-//    shared. When every send is 0 the reverb is fed silence for 4 s so its
-//    tail dies away, then skipped until a MIX comes back up.
-//  * ReverbSc's delay lines are large, so the object lives in SDRAM.
+//    expensive things in GLOOP). Each track's MIX is its send level; SIZE,
+//    TONE (damping low-pass) and PRE-DLY (up to 250 ms before the reverb)
+//    are shared. When every send is 0 the reverb is fed silence for 4 s so
+//    its tail dies away, then skipped until a MIX comes back up.
+//  * ReverbSc's delay lines and the pre-delay buffer are large, so they
+//    live in SDRAM.
 // =============================================================================
 #pragma once
 #include <cmath>
@@ -45,9 +47,20 @@ class TrackFilter
         cutoff_hz_ = 18000.f;
     }
 
-    // Block rate. type: 0 = low-pass, 1 = high-pass, 2 = band-pass
-    void SetParams(float cutoff01, float reso, float type)
+    // Block rate. type: 0 = low-pass, 1 = high-pass, 2 = band-pass.
+    // drive 0..1: pushes the signal into the filter through a soft clip
+    // (gain up to x16, with make-up gain so it gets grittier, not louder).
+    // The clipped harmonics then go through the filter, so a low CUTOFF
+    // with high RESO growls. 0 = clean (skipped). (DaisySP's own Svf drive
+    // term isn't used: its cubic feedback blows up at low RESO.)
+    void SetParams(float cutoff01, float reso, float type, float drive)
     {
+        drive_on_ = drive > 0.005f;
+        const float g = 1.f + drive * drive * 15.f;
+        gain_ += 0.2f * (g - gain_);
+        // Peaks match at 0.25; the extra term pulls back the loudness that
+        // clipping adds (it squashes peaks, so the average comes up)
+        makeup_ = 0.25f / SoftClip(0.25f * gain_) / (1.f + drive * 0.9f);
         float target = 40.f * powf(450.f, cutoff01);
         cutoff_hz_ += (target - cutoff_hz_) * 0.15f; // one-pole smoothing
         const float res = reso * 0.9f;
@@ -72,6 +85,11 @@ class TrackFilter
     // Per sample, in place
     inline void Process(float& l, float& r)
     {
+        if(drive_on_)
+        {
+            l = SoftClip(l * gain_) * makeup_;
+            r = SoftClip(r * gain_) * makeup_;
+        }
         svf_[0].Process(l);
         svf_[1].Process(r);
         l = Out(0, type_);
@@ -83,6 +101,16 @@ class TrackFilter
             l = Out(0, prev_type_) + k * (l - Out(0, prev_type_));
             r = Out(1, prev_type_) + k * (r - Out(1, prev_type_));
         }
+    }
+
+    static inline float SoftClip(float x) // tanh-like, flat at +/-1 beyond +/-3
+    {
+        if(x > 3.f)
+            return 1.f;
+        if(x < -3.f)
+            return -1.f;
+        const float x2 = x * x;
+        return x * (27.f + x2) / (27.f + 9.f * x2);
     }
 
   private:
@@ -97,11 +125,16 @@ class TrackFilter
     float        xf_        = 1.f;
     float        bp_gain_   = 2.f;
     float        cutoff_hz_ = 18000.f;
+    bool         drive_on_  = false;
+    float        gain_      = 1.f;
+    float        makeup_    = 1.f;
 };
 
 // -----------------------------------------------------------------------------
 // StereoChorus — two modulated delay lines (one per channel), LFOs a quarter
-// cycle apart for width. RATE 0..1 → 0.05..10 Hz (exponential). MIX 0..1:
+// cycle apart for width. RATE 0..1 → 0.05..10 Hz (exponential). DEPTH 0..1 →
+// ±0.5..8 ms sweep. WIDTH 0..1: L/R LFOs in step (mono) .. half a cycle apart
+// (widest). MIX 0..1:
 // 0 = dry, 1 = classic 50/50 chorus. The delay lines are always written, so
 // turning MIX up never plays stale audio; reading is skipped at MIX 0.
 // -----------------------------------------------------------------------------
@@ -121,10 +154,13 @@ class StereoChorus
     }
 
     // Block rate
-    void SetParams(float rate01, float mix)
+    void SetParams(float rate01, float depth01, float width01, float mix)
     {
         inc_ = 0.05f * powf(200.f, rate01) / sr_; // LFO phase step
         mix_ = mix;
+        // Smoothed so turning DEPTH doesn't make the pitch jump
+        depth_ += 0.1f * ((0.0005f + depth01 * 0.0075f) * sr_ - depth_);
+        offset_ = 0.5f * width01;
     }
 
     inline void Process(float& l, float& r)
@@ -134,7 +170,7 @@ class StereoChorus
         if(mix_ > 0.001f)
         {
             const float wl = Read(0, base_ + depth_ * Tri(phase_));
-            const float wr = Read(1, base_ + depth_ * Tri(phase_ + 0.25f));
+            const float wr = Read(1, base_ + depth_ * Tri(phase_ + offset_));
             const float dry = 1.f - 0.5f * mix_, wet = 0.5f * mix_;
             l = l * dry + wl * wet;
             r = r * dry + wr * wet;
@@ -170,6 +206,7 @@ class StereoChorus
     float base_  = 576.f;
     float depth_ = 240.f;
     float phase_ = 0.f;
+    float offset_ = 0.25f; // R LFO phase offset (WIDTH)
     float inc_   = 0.f;
     float mix_   = 0.f;
 };
@@ -361,9 +398,17 @@ class ModalResonator
 class ReverbBus
 {
   public:
-    void Init(float sample_rate, daisysp::ReverbSc* reverb)
+    // Pre-delay buffer: up to 250 ms, stereo (lives in SDRAM)
+    static constexpr int kPreLen = 16384; // power of 2, > 0.25 s at 48 kHz
+    static_assert((kPreLen & (kPreLen - 1)) == 0, "kPreLen must be a power of 2");
+
+    void Init(float sample_rate, daisysp::ReverbSc* reverb, float* pre_buf)
     {
         reverb_ = reverb;
+        sr_     = sample_rate;
+        pre_    = pre_buf;
+        for(int i = 0; i < kPreLen * 2; i++)
+            pre_[i] = 0.f;
         reverb_->Init(sample_rate);
         reverb_->SetLpFreq(10000.f);
         idle_limit_ = uint32_t(sample_rate * 4.f); // longest tail at max SIZE
@@ -371,10 +416,14 @@ class ReverbBus
     }
 
     // Block rate. any_send: is any track's MIX above zero?
-    void SetParams(float size, bool any_send)
+    // tone 0..1 → damping low-pass 1 kHz (dark) .. 18 kHz (bright)
+    // predelay: seconds (0..0.25) before the reverb starts
+    void SetParams(float size, float tone, float predelay, bool any_send)
     {
         reverb_->SetFeedback(0.6f + size * 0.37f);
-        any_send_ = any_send;
+        reverb_->SetLpFreq(1000.f * powf(18.f, tone));
+        pre_target_ = fminf(predelay * sr_, float(kPreLen - 2));
+        any_send_   = any_send;
     }
 
     // Per sample: send in, wet out
@@ -392,6 +441,23 @@ class ReverbBus
             wet_l = wet_r = 0.f; // fully idle: skip the reverb
             return;
         }
+        // Pre-delay. The delay time glides (like a tape delay) rather than
+        // jumping, so turning PRE-DLY doesn't click.
+        pre_d_ += 0.0005f * (pre_target_ - pre_d_);
+        pre_[pre_w_ * 2]     = in_l;
+        pre_[pre_w_ * 2 + 1] = in_r;
+        if(pre_d_ >= 1.f)
+        {
+            float pos = float(pre_w_) - pre_d_;
+            if(pos < 0.f)
+                pos += float(kPreLen);
+            const int   i0 = int(pos);
+            const int   i1 = (i0 + 1) & (kPreLen - 1);
+            const float f  = pos - float(i0);
+            in_l = pre_[i0 * 2] + f * (pre_[i1 * 2] - pre_[i0 * 2]);
+            in_r = pre_[i0 * 2 + 1] + f * (pre_[i1 * 2 + 1] - pre_[i0 * 2 + 1]);
+        }
+        pre_w_ = (pre_w_ + 1) & (kPreLen - 1);
         reverb_->Process(in_l, in_r, &wet_l, &wet_r);
     }
 
@@ -400,6 +466,10 @@ class ReverbBus
     bool               any_send_   = false;
     uint32_t           idle_       = 0;
     uint32_t           idle_limit_ = 192000;
+    float              sr_         = 48000.f;
+    float*             pre_        = nullptr;
+    int                pre_w_      = 0;
+    float              pre_d_      = 0.f, pre_target_ = 0.f;
 };
 
 } // namespace gloop

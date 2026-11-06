@@ -7,6 +7,7 @@
 // =============================================================================
 #pragma once
 #include <cstddef>
+#include <cstdint>
 
 namespace gloop
 {
@@ -32,21 +33,28 @@ struct Params
     float grain_size = 0.08f; // 0.01..0.5 s   (GRAINS alt layer, encoder 1)
     float grain_pitch = 0.f;  // -24..+24 semitones, grains only (alt, enc 3)
 
-    // FX page
-    float cutoff   = 1.f;  // 0..1 → 40 Hz..18 kHz (exponential)
-    float reso     = 0.f;  // 0..1
-    float filter_type = 0.f; // 0 = LP, 1 = HP, 2 = BP (SHIFT + CUTOFF)
-    float rev_size = 0.5f; // 0..1 → reverb feedback
-    float rev_mix  = 0.f;  // 0..1 dry/wet
-
-    // FX page 2 (FX pressed again). Chain: filter → chorus → resonator → reverb
-    float res_note   = 48.f;  // MIDI note 24..96 (C1..C7), default C3
-    float res_bright = 0.5f;  // 0..1 wood → glass
-    float res_struct = 0.27f; // 0..1, 0.25..0.3 = harmonic (SHIFT + enc 1)
-    float res_decay  = 0.5f;  // 0..1 knock → ~30 s drone (SHIFT + enc 2)
-    float res_mix    = 0.f;   // 0..1 (0 = off) (SHIFT + enc 4)
-    float chorus_rate = 0.3f; // 0..1 → 0.05..10 Hz
-    float chorus_mix  = 0.f;  // 0..1 (0 = off, 1 = classic 50/50 chorus)
+    // FX pages (FX cycles them). Chain: filter → chorus → resonator → reverb
+    // FILTER
+    float cutoff       = 1.f;  // 0..1 → 40 Hz..18 kHz (exponential)
+    float reso         = 0.f;  // 0..1
+    float filter_type  = 0.f;  // 0 = LP, 1 = HP, 2 = BP
+    float filter_drive = 0.f;  // 0..1 drive into the filter (0 = clean)
+    // CHORUS
+    float chorus_rate  = 0.3f; // 0..1 → 0.05..10 Hz
+    float chorus_depth = 0.6f; // 0..1 → ±0.5..8 ms sweep
+    float chorus_width = 0.5f; // 0..1 mono .. widest
+    float chorus_mix   = 0.f;  // 0..1 (0 = off, 1 = classic 50/50 chorus)
+    // RESONATOR
+    float res_note   = 48.f;   // MIDI note 24..96 (C1..C7), default C3
+    float res_struct = 0.27f;  // 0..1, 0.25..0.3 = harmonic
+    float res_decay  = 0.5f;   // 0..1 knock → ~30 s drone
+    float res_mix    = 0.f;    // 0..1 (0 = off)
+    float res_bright = 0.5f;   // 0..1 wood → glass (hold encoder 2 + turn)
+    // REVERB (SIZE, TONE and PRE-DLY are shared: there's one reverb)
+    float rev_size     = 0.5f; // 0..1 → reverb feedback
+    float rev_tone     = 0.8f; // 0..1 → damping 1 kHz..18 kHz
+    float rev_predelay = 0.f;  // 0..0.25 s
+    float rev_mix      = 0.f;  // 0..1 send (dry/wet)
 };
 
 enum class Page : int
@@ -56,6 +64,17 @@ enum class Page : int
     Fx     = 2,
 };
 constexpr int kNumPages = 3;
+
+// The FX page is four pages, one per effect (FX cycles, SHIFT + FX goes back)
+enum class FxPage : int
+{
+    Filter    = 0,
+    Chorus    = 1,
+    Resonator = 2,
+    Reverb    = 3,
+};
+constexpr int kNumFxPages = 4;
+extern const char* const kFxPageNames[kNumFxPages];
 
 // How a value is printed on the screen
 enum class Format
@@ -71,6 +90,7 @@ enum class Format
     LfoHz,     // 0..1 → 0.05..10 Hz → "0.8HZ"
     FilterType, // 0/1/2 → "LP" / "HP" / "BP"
     Note,       // MIDI note → "C3", "F#4"
+    ToneHz,     // 0..1 → 1..18 kHz → "10K"
 };
 
 // Describes one encoder's job on one page
@@ -92,27 +112,25 @@ struct ParamDesc
     Format        format;
 };
 
-// kPageParams[page][encoder]
-extern const ParamDesc kPageParams[kNumPages][4];
+// Everything that decides what an encoder edits right now
+struct EncoderContext
+{
+    Page    page       = Page::Loop;
+    int     fx_page    = 0;     // FxPage on the FX page
+    bool    grains_alt = false; // GRAINS pressed again: alt layer
+    bool    shift      = false; // SHIFT held
+    uint8_t held       = 0;     // bit i: encoder i pushed in (hold + turn)
+    bool    fx_held    = false; // FX button held: the FX mixer, any page
+};
 
-// SHIFT layer: an alternate parameter for an encoder, or nullptr when SHIFT
-// just means "fine adjust" for that encoder.
-const ParamDesc* ShiftParam(Page page, int encoder);
-
-// GRAINS alt layer (GRAINS pressed again): encoder 1 = SIZE, encoder 3 =
-// grain PITCH; nullptr for encoders that keep their normal job
-const ParamDesc* GrainsAltParam(int encoder);
-
-// The alt layer of a page (page button pressed again): GRAINS → SIZE /
-// grain PITCH, FX → drive and chorus. nullptr = encoder keeps its job.
-const ParamDesc* AltParam(Page page, int encoder);
-
-// SHIFT on a page's alt layer (FX page 2: STRUCTURE, DECAY, RES MIX)
-const ParamDesc* AltShiftParam(Page page, int encoder);
-
-// The parameter an encoder edits right now, given SHIFT and the alt layer.
-// nullptr = its normal kPageParams entry.
-const ParamDesc* OverrideParam(Page page, int encoder, bool shift, bool alt_layer);
+// The parameter encoder `enc` edits in this context. Priority:
+//   FX held        → mixer: CUTOFF / CHORUS MIX / RES MIX / REVERB MIX
+//   encoder held   → its hold-and-turn parameter, if it has one
+//   SHIFT          → its SHIFT parameter, if it has one (else fine adjust)
+//   GRAINS alt     → SIZE / G.PITCH / ENV
+//   otherwise      → the page's normal job
+// *is_alt is set when it isn't the page's normal job (label shown inverted).
+const ParamDesc& EncoderParam(const EncoderContext& c, int enc, bool* is_alt = nullptr);
 
 // Envelope shape names, shared by the UI and the formatter
 extern const char* const kEnvelopeNames[10];

@@ -96,6 +96,8 @@ void Ui::Draw(const UiState& s)
     }
     if(s.load_progress >= 0.f)
         DrawLoading(s);
+    else
+        DrawPopup(s);
     g_.ResetClip();
     DrawReadouts(s);
     DrawFooter(s);
@@ -107,8 +109,21 @@ void Ui::DrawHeader(const UiState& s)
     DrawTrackChip(s);
     g_.Text(16, 2, kPageNames[int(s.page)], W, Gfx::kBig);
 
+    // FX: four dots for FILTER / CHORUS / RESONATOR / REVERB
+    if(s.page == Page::Fx)
+        for(int i = 0; i < kNumFxPages; i++)
+        {
+            if(i == s.fx_page)
+                g_.FillRect(31 + i * 5, 4, 3, 3, W);
+            else
+                g_.Rect(31 + i * 5, 4, 3, 3, M);
+        }
+    // Holding FX: the encoders are the FX mixer, whatever the page
+    if(s.enc.fx_held)
+        g_.Chip(52, 1, "FX MIX", Gfx::kSmall);
+
     // Tempo next to the page name on the LOOP page, e.g. "120 BPM"
-    if(s.page == Page::Loop)
+    if(s.page == Page::Loop && !s.enc.fx_held)
     {
         char bpm[12];
         int  b = int(lroundf(s.params->bpm)), k = 0;
@@ -809,10 +824,118 @@ void Ui::DrawGrains(const UiState& s)
         DrawCloud(count, p.spread);
 }
 
+// Same soft clip as TrackFilter / ModalResonator (fx.h), for the drive glyph
+static inline float TrackSoftClip(float x)
+{
+    if(x > 3.f)
+        return 1.f;
+    if(x < -3.f)
+        return -1.f;
+    const float x2 = x * x;
+    return x * (27.f + x2) / (27.f + 9.f * x2);
+}
+
 // =============================================================================
-// FX: filter response (left) | reverb rings (right)
+// FX: one effect per page — FILTER / CHORUS / RESONATOR / REVERB
+// (FX cycles them, SHIFT + FX goes back; dots in the header show which)
 // =============================================================================
-// ---- Choir (FX page 2, chorus panel) ----------------------------------------
+static constexpr int kFxTop = 24, kFxBot = 83; // picture area under the chip
+
+// Text "LABEL 60%" for a parameter that isn't on the readouts
+static void ValueTag(Gfx& g, int right, int y, const char* label, float v01, uint16_t c)
+{
+    char buf[16];
+    int  k = 0;
+    for(; *label && k < 8; label++)
+        buf[k++] = *label;
+    buf[k++] = ' ';
+    const int pct = int(v01 * 100.f + 0.5f);
+    if(pct >= 100)
+        buf[k++] = '1';
+    if(pct >= 10)
+        buf[k++] = char('0' + (pct / 10) % 10);
+    buf[k++] = char('0' + pct % 10);
+    buf[k++] = '%';
+    buf[k]   = 0;
+    g.TextRight(right, y, buf, c, Gfx::kSmall);
+}
+
+// ---- FILTER: the response curve across the whole width ---------------------
+//   CUTOFF / RESO / TYPE shape the curve; DRIVE makes the line shimmer like
+//   heat and clips the little sine wave top right.
+static void DrawFxFilter(Gfx& g, const UiState& s, uint32_t frame)
+{
+    const Params& p     = *s.params;
+    const int     ftype = int(p.filter_type + 0.5f); // 0 LP, 1 HP, 2 BP
+    static const char* const kTypeNames[3] = {"LP", "HP", "BP"};
+    const int cw = g.Chip(1, 13, "FILTER", Gfx::kSmall);
+    g.Text(cw + 4, 15, kTypeNames[ftype], L, Gfx::kSmall);
+
+    // Drive glyph: a sine squashed by the same soft clip as the audio
+    {
+        const int   gx = 108, gy = 18, gw = 30;
+        const float gain = 1.f + p.filter_drive * p.filter_drive * 15.f;
+        const float norm = 1.f / TrackSoftClip(gain);
+        int         prv  = gy;
+        for(int x = 0; x < gw; x++)
+        {
+            const float v = TrackSoftClip(sinf(x * 6.2831853f / gw * 1.5f) * gain) * norm;
+            const int   y = gy - int(lroundf(v * 4.f));
+            if(x > 0)
+                g.Line(gx + x - 1, prv, gx + x, y, p.filter_drive > 0.005f ? W : M);
+            prv = y;
+        }
+        g.Text(gx - 22, 15, "DRIVE", p.filter_drive > 0.005f ? L : D, Gfx::kSmall);
+    }
+
+    const int top = kFxTop + 2, bot = kFxBot, x0 = 3, w = 134;
+    for(int gx = x0 + 33; gx < x0 + w; gx += 33)
+        g.VLine(gx, top, bot, D);
+    g.HLine(x0, x0 + w, top + 14, D); // 0 dB
+
+    const float q    = 0.7f + p.reso * 4.f;
+    const float heat = p.filter_drive * 1.8f;
+    int         prev = 0;
+    for(int x = 0; x <= w; x++)
+    {
+        float xq  = float(x) / w;
+        float wn  = powf(10.f, (xq - p.cutoff) * 2.2f);
+        float num = ftype == 1 ? wn * wn : (ftype == 2 ? wn / q : 1.f);
+        float mag = num / sqrtf((1.f - wn * wn) * (1.f - wn * wn) + (wn / q) * (wn / q));
+        float db  = fmaxf(-36.f, fminf(12.f, 20.f * log10f(mag)));
+        int   y   = top + int((12.f - db) / 48.f * float(bot - top));
+        if(heat > 0.05f) // heat shimmer: a little jitter that moves each frame
+        {
+            uint32_t h = (uint32_t(x) * 2654435761u) ^ (frame * 40503u);
+            h ^= h >> 13;
+            y += int(lroundf((float(h & 255) / 255.f - 0.5f) * 1.4f * heat));
+        }
+        y = y < top ? top : (y > bot ? bot : y);
+        if(y < bot) // area under the curve: mid grey near the line, dark below
+        {
+            g.VLine(x0 + x, y + 1, y + 3 < bot ? y + 3 : bot, M);
+            if(y + 4 < bot)
+                g.VLine(x0 + x, y + 4, bot, D);
+        }
+        if(x > 0)
+        {
+            g.Line(x0 + x - 1, prev, x0 + x, y, W);
+            if(p.filter_drive > 0.5f) // driven hard: a thicker line
+                g.Line(x0 + x - 1, prev - 1, x0 + x, y - 1, L);
+        }
+        prev = y;
+    }
+    g.HLine(x0, x0 + w, bot, M);
+    const int cx = x0 + int(p.cutoff * w); // cutoff marker
+    for(int y = top; y < bot; y += 2)
+        g.Pixel(cx, y, L);
+}
+
+// ---- CHORUS: a little choir --------------------------------------------------
+//   MIX    how many sing: 1 silent singer at 0, up to 8
+//   RATE   how fast their mouths open and close
+//   DEPTH  how much they sway (bob up and down)
+//   WIDTH  how far apart they stand
 // 9x15 singer: '.' clear, W/L/M/D/B palette, 'e' = eyes (dark dots, grey
 // when shut while singing), 'o' = mouth (an open "O" when singing),
 // 'r' = robe (front row M, back row D), 'k' = songbook.
@@ -860,48 +983,50 @@ static void DrawSinger(Gfx& g, int x, int y, bool back, bool singing)
         }
 }
 
-static void DrawChoir(Gfx& g, const UiState& s, uint32_t frame)
+static void DrawFxChorus(Gfx& g, const UiState& s, uint32_t frame)
 {
     const Params& p  = *s.params;
     const bool    on = p.chorus_mix > 0.001f;
+    g.Chip(1, 13, "CHORUS", Gfx::kSmall);
+
     // How many sing: 1 (silent) at MIX 0, then 2..8 as MIX goes up
     const int n = on ? 2 + int(p.chorus_mix * 6.f + 0.5f) : 1;
-
-    // Places: back row (4) behind, front row (4) between them. They join in
-    // from the middle outwards.
-    struct Spot { int x, y; bool back; };
+    // Slots in units of the spacing: front row (y 60) and back row (y 45),
+    // joining from the middle outwards
+    struct Spot { float u; bool back; };
     static const Spot kSpots[8] = {
-        {108, 55, false}, {119, 55, false}, {103, 40, true}, {114, 40, true},
-        {97, 55, false},  {130, 55, false}, {125, 40, true}, {92, 40, true},
+        {0.f, false},  {-0.5f, true}, {0.5f, true},  {-1.f, false},
+        {1.f, false},  {-1.5f, true}, {1.5f, true},  {-2.f, false},
     };
-    // Back row first so the front row overlaps it
-    for(int pass = 0; pass < 2; pass++)
+    const float sp  = 12.f + p.chorus_width * 9.f; // WIDTH: spread out
+    const float sway = 0.5f + p.chorus_depth * 2.5f; // DEPTH: how much they bob
+    const int   cx  = 70 - 4;
+    for(int pass = 0; pass < 2; pass++) // back row first
         for(int i = 0; i < n; i++)
         {
-            const Spot& sp = kSpots[i];
-            if(sp.back != (pass == 0))
+            const Spot& st = kSpots[i];
+            if(st.back != (pass == 0))
                 continue;
-            // Each singer opens and closes in time with the chorus LFO, a bit
-            // out of step with the others (that's what a chorus is...)
             float ph = s.chorus_phase + i * 0.37f;
             ph -= floorf(ph);
             const bool singing = on && ph < 0.6f;
-            const int  bob     = singing ? -1 : 0;
-            DrawSinger(g, sp.x, sp.y + bob, sp.back, singing);
+            const int  bob = on ? -int(lroundf(sway * (0.5f + 0.5f * sinf(ph * 6.2831853f)))) : 0;
+            const int  x   = cx + int(lroundf(st.u * sp));
+            DrawSinger(g, x, (st.back ? 45 : 60) + bob, st.back, singing);
         }
-    // Riser under the front row
-    g.HLine(92, 139, 70, D);
+    g.HLine(4, 135, 76, D); // riser
+    g.HLine(10, 129, 78, D);
 
     // Notes floating up: more singers, more notes
     if(on)
     {
         static const char* const kNote[5] = {"..WW", "..W.", "..W.", "WWW.", "WW.."};
-        const int notes = (n + 1) / 3;
+        const int notes = (n + 1) / 2;
         for(int k = 0; k < notes; k++)
         {
-            const int t  = int((frame + k * 23) % 40); // 40 frames to rise
-            const int nx = 96 + ((k * 17 + int(frame + k * 23) / 40 * 13) % 38);
-            const int ny = 36 - t / 3;
+            const int t  = int((frame + k * 17) % 40); // 40 frames to rise
+            const int nx = 20 + ((k * 29 + int(frame + k * 17) / 40 * 37) % 96);
+            const int ny = 42 - t / 2;
             const uint16_t c = t < 26 ? L : M; // fade near the top
             for(int r = 0; r < 5; r++)
                 for(int q = 0; q < 4; q++)
@@ -911,205 +1036,228 @@ static void DrawChoir(Gfx& g, const UiState& s, uint32_t frame)
     }
 }
 
-// FX page 2 (FX pressed again): resonator modes | chorus LFOs
-static void DrawFxPage2(Gfx& g, const UiState& s, uint32_t frame)
+// ---- RESONATOR: a wine glass played with a wet finger -----------------------
+//   FREQ    water level (more water = lower note, like a real glass)
+//   STRUCT  glass shape: narrow flute (harmonic) → wide bell bowl
+//   DECAY   how many sound waves ripple out, and how far
+//   BRIGHT  (hold enc 2 + turn) how shiny the glass and waves are
+//   MIX     0: the glass just sits there; up: a finger circles the rim, the
+//           water shivers and the waves pulse with the output level
+static void DrawFxResonator(Gfx& g, const UiState& s, uint32_t frame)
 {
     const Params& p = *s.params;
-
-    // ---- Resonator: a wine glass played with a wet finger ----------------
-    //   FREQ    water level (more water = lower note, like a real glass)
-    //   STRUCT  glass shape: narrow flute (harmonic) → wide bell bowl
-    //   BRIGHT  how shiny the glass and the sound waves are
-    //   DECAY   how many sound waves ripple out, and how far
-    //   R.MIX   0: the glass just sits there; up: a finger circles the rim,
-    //           the water shivers and waves pulse with the output level
     g.Chip(1, 13, "RESONATOR", Gfx::kSmall);
+    const bool bright_held = (s.enc.held >> 1) & 1;
+    ValueTag(g, 138, 15, "BRIGHT", p.res_bright, bright_held ? W : M);
+
+    const bool  on    = p.res_mix > 0.001f;
+    const float lvl   = on ? fminf(1.f, s.res_level * 4.f) : 0.f;
+    const int   cx    = 70;
+    const int   rim_y = 38, bowl_bot = 64, stem_bot = 78;
+    const int   rim_w = 7 + int(p.res_struct * 9.f);
+    const uint16_t glass = !on ? M : (p.res_bright > 0.5f ? W : L);
+
+    // Bowl half-width at row y: tapering flute (low STRUCT) → round bowl
+    auto half = [&](int y) {
+        const float t     = float(y - rim_y) / float(bowl_bot - rim_y);
+        const float t2    = t * t;
+        const float bowl  = sqrtf(fmaxf(0.f, 1.f - t2));
+        const float flute = (1.f - 0.6f * t) * sqrtf(fmaxf(0.f, 1.f - t2 * t2 * t2));
+        const float k     = p.res_struct;
+        return fmaxf(1.f, rim_w * (flute * (1.f - k) + bowl * k));
+    };
+
+    // Water: FREQ C1 → nearly full .. C7 → almost empty
+    const float wfrac = 0.85f - (p.res_note - 24.f) / 72.f * 0.75f;
+    const int   wy    = bowl_bot - int(wfrac * (bowl_bot - rim_y - 3));
+    for(int y = wy + 1; y < bowl_bot; y++)
     {
-        const bool  on    = p.res_mix > 0.001f;
-        const float lvl   = on ? fminf(1.f, s.res_level * 4.f) : 0.f;
-        const int   cx    = 44;
-        const int   rim_y = 38, bowl_bot = 64, stem_bot = 78;
-        const int   rim_w = 7 + int(p.res_struct * 9.f);      // half-width at rim
-        const uint16_t glass = !on ? M : (p.res_bright > 0.5f ? W : L);
-
-        // Bowl half-width at row y: straight-ish flute when STRUCT is low,
-        // a rounded bell when it's high
-        auto half = [&](int y) {
-            const float t  = float(y - rim_y) / float(bowl_bot - rim_y); // 0 rim .. 1 bottom
-            const float t2 = t * t;
-            const float bowl  = sqrtf(fmaxf(0.f, 1.f - t2));                  // round bowl
-            const float flute = (1.f - 0.6f * t) * sqrtf(fmaxf(0.f, 1.f - t2 * t2 * t2));
-            const float k     = p.res_struct;
-            return fmaxf(1.f, rim_w * (flute * (1.f - k) + bowl * k));
-        };
-
-        // Water: FREQ C1 → nearly full .. C7 → almost empty
-        const float wfrac = 0.85f - (p.res_note - 24.f) / 72.f * 0.75f;
-        const int   wy    = bowl_bot - int(wfrac * (bowl_bot - rim_y - 3));
-        for(int y = wy + 1; y < bowl_bot; y++)
+        const int hw = int(half(y)) - 1;
+        if(hw > 0)
+            g.HLine(cx - hw, cx + hw, y, D);
+    }
+    {
+        const int hw  = int(half(wy)) - 1;
+        int       prv = wy;
+        for(int x = -hw; x <= hw; x++)
         {
-            const int hw = int(half(y)) - 1;
-            if(hw > 0)
-                g.HLine(cx - hw, cx + hw, y, D);
+            const float wob = lvl * 1.6f * sinf(x * 0.9f + frame * 0.7f);
+            const int   y   = wy + int(lroundf(wob));
+            if(x > -hw)
+                g.Line(cx + x - 1, prv, cx + x, y, on ? L : M);
+            prv = y;
         }
-        // Water surface, shivering with the output level
+    }
+    for(int y = rim_y + 1; y <= bowl_bot; y++) // bowl outline
+    {
+        const int a = int(half(y - 1)), b = int(half(y));
+        g.Line(cx - a, y - 1, cx - b, y, glass);
+        g.Line(cx + a, y - 1, cx + b, y, glass);
+    }
+    for(int x = -rim_w; x <= rim_w; x++) // rim (a flat ellipse)
+    {
+        const float u  = float(x) / rim_w;
+        const int   dy = int(lroundf(2.f * sqrtf(fmaxf(0.f, 1.f - u * u))));
+        g.Pixel(cx + x, rim_y - dy, glass);
+        g.Pixel(cx + x, rim_y + dy, on ? M : D);
+    }
+    if(p.res_bright > 0.2f) // shine
+    {
+        const uint16_t shine = p.res_bright > 0.66f ? W : (p.res_bright > 0.4f ? L : M);
+        for(int y = rim_y + 3; y < rim_y + 12; y++)
+            g.Pixel(cx - int(half(y)) + 2, y, shine);
+    }
+    g.VLine(cx, bowl_bot + 1, stem_bot - 1, glass); // stem and foot
+    g.HLine(cx - 10, cx + 10, stem_bot, glass);
+    g.HLine(cx - 7, cx + 7, stem_bot - 1, on ? M : D);
+
+    if(on)
+    {
+        // Sound waves either side: count/reach from DECAY, shade from BRIGHT
+        const int   waves = 1 + int(p.res_decay * 4.f + 0.5f);
+        const float phase = float(frame % 12) / 12.f;
+        const int   wcy   = (rim_y + bowl_bot) / 2;
+        for(int k = 0; k < waves; k++)
         {
-            const int hw  = int(half(wy)) - 1;
-            int       prv = wy;
-            for(int x = -hw; x <= hw; x++)
+            const float r = float(rim_w + 7) + (k + phase) * 9.f;
+            if(r > 66.f)
+                break;
+            const float fade = 1.f - (k + phase) / float(waves + 1);
+            const float b    = fade * (0.4f + 0.6f * lvl) * (0.5f + 0.5f * p.res_bright);
+            if(b < 0.15f)
+                continue;
+            const uint16_t c = b > 0.6f ? W : (b > 0.35f ? L : M);
+            for(int a = -9; a <= 9; a++) // ±40 degrees
             {
-                const float wob = lvl * 1.6f * sinf(x * 0.9f + frame * 0.7f);
-                const int   y   = wy + int(lroundf(wob));
-                if(x > -hw)
-                    g.Line(cx + x - 1, prv, cx + x, y, on ? L : M);
-                prv = y;
+                if(a % 3 == 0 && k > 0)
+                    continue; // outer waves dashed: they're fading
+                const float ang = a * 0.077f;
+                const int   dx  = int(r * cosf(ang));
+                const int   dy  = int(r * sinf(ang) * 0.9f);
+                g.Pixel(cx + dx, wcy + dy, c);
+                g.Pixel(cx - dx, wcy + dy, c);
             }
         }
-        // Bowl outline (rows joined, so the steep bottom has no gaps)
-        for(int y = rim_y + 1; y <= bowl_bot; y++)
-        {
-            const int a = int(half(y - 1)), b = int(half(y));
-            g.Line(cx - a, y - 1, cx - b, y, glass);
-            g.Line(cx + a, y - 1, cx + b, y, glass);
-        }
-        // Rim (a flat ellipse)
-        for(int x = -rim_w; x <= rim_w; x++)
-        {
-            const float u  = float(x) / rim_w;
-            const int   dy = int(lroundf(2.f * sqrtf(fmaxf(0.f, 1.f - u * u))));
-            g.Pixel(cx + x, rim_y - dy, glass);
-            g.Pixel(cx + x, rim_y + dy, on ? M : D);
-        }
-        // Shine: a streak down the left of the bowl, brighter with BRIGHT
-        if(p.res_bright > 0.2f)
-        {
-            const uint16_t shine = p.res_bright > 0.66f ? W : (p.res_bright > 0.4f ? L : M);
-            for(int y = rim_y + 3; y < rim_y + 12; y++)
-                g.Pixel(cx - int(half(y)) + 2, y, shine);
-        }
-        // Stem and foot
-        g.VLine(cx, bowl_bot + 1, stem_bot - 1, glass);
-        g.HLine(cx - 10, cx + 10, stem_bot, glass);
-        g.HLine(cx - 7, cx + 7, stem_bot - 1, on ? M : D);
+        // The finger, circling the rim (dimmer when it's round the back)
+        const float th   = frame * 0.12f;
+        const int   fx   = cx + int(rim_w * cosf(th));
+        const bool  back = sinf(th) < 0.f;
+        g.FillRect(fx - 1, rim_y - 11, 3, 10, back ? M : W);
+        g.FillRect(fx - 1, rim_y - 2, 3, 1, back ? D : L);
+        g.Pixel(fx, rim_y - 3, back ? D : L);
+    }
+    else
+        g.TextCentered(70, 27, "MIX UP TO PLAY THE GLASS", M, Gfx::kSmall);
+}
 
-        // Sound waves either side: count and reach from DECAY, shade from
-        // BRIGHT, moving outwards and pulsing with the output
-        if(on)
-        {
-            const int   waves = 1 + int(p.res_decay * 3.f + 0.5f);
-            const float phase = float(frame % 12) / 12.f;
-            const int   wcy   = (rim_y + bowl_bot) / 2;
-            for(int k = 0; k < waves; k++)
-            {
-                const float r = float(rim_w + 7) + (k + phase) * 7.f;
-                if(r > 42.f)
-                    break;
-                const float fade = 1.f - (k + phase) / float(waves + 1);
-                const float b    = fade * (0.4f + 0.6f * lvl) * (0.5f + 0.5f * p.res_bright);
-                if(b < 0.15f)
-                    continue;
-                const uint16_t c = b > 0.6f ? W : (b > 0.35f ? L : M);
-                for(int a = -9; a <= 9; a++) // ±40 degrees
-                {
-                    const float ang = a * 0.077f;
-                    const int   dx  = int(r * cosf(ang));
-                    const int   dy  = int(r * sinf(ang) * 0.9f);
-                    if(a % 3 == 0 && k > 0)
-                        continue; // outer waves dashed: they're fading
-                    g.Pixel(cx + dx, wcy + dy, c);
-                    g.Pixel(cx - dx, wcy + dy, c);
-                }
-            }
+// ---- REVERB: a cathedral -----------------------------------------------------
+//   SIZE     how many arches the nave has (how far back it goes)
+//   TONE     how far into the hall you can see / how bright the echoes are
+//   PRE-DLY  the quiet gap before the first echo ring leaves the singer
+//   MIX      how bright the echo rings are (0 = a silent, dim hall)
+static void DrawEllipse(Gfx& g, int cx, int cy, int rx, int ry, uint16_t c, bool dotted)
+{
+    const int steps = 8 + rx * 2;
+    for(int i = 0; i < steps; i++)
+    {
+        if(dotted && (i & 1))
+            continue;
+        const float a = float(i) / steps * 6.2831853f;
+        g.Pixel(cx + int(lroundf(rx * cosf(a))), cy + int(lroundf(ry * sinf(a))), c);
+    }
+}
 
-            // The finger, circling the rim (dimmer when it's round the back)
-            const float th   = frame * 0.12f;
-            const int   fx   = cx + int(rim_w * cosf(th));
-            const bool  back = sinf(th) < 0.f;
-            const uint16_t fc = back ? M : W;
-            g.FillRect(fx - 1, rim_y - 11, 3, 10, fc);       // finger
-            g.FillRect(fx - 1, rim_y - 2, 3, 1, back ? D : L); // fingertip (wet)
-            g.Pixel(fx, rim_y - 3, back ? D : L);             // nail
+static void DrawFxReverb(Gfx& g, const UiState& s, uint32_t frame)
+{
+    const Params& p = *s.params;
+    g.Chip(1, 13, "REVERB", Gfx::kSmall);
+    g.SetClip(0, kFxTop, kSW - 1, kFxBot);
+
+    const int   vx = 70, vy = 47;           // vanishing point
+    const int   arches = 2 + int(p.rev_size * 5.f + 0.5f);
+    const float reach  = 0.6f + p.rev_tone * 1.6f; // TONE: how far you can see
+    static const uint16_t kShade[4] = {L, M, D, D};
+
+    // Arches, far to near. Each is a column pair with a rounded-pointed
+    // vault on top; lines through the column feet and the vault springs
+    // run back to the vanishing point, so it reads as a long nave.
+    auto arch = [&](int k, int& hw, int& base, int& spring, int& apex) {
+        const float sc = powf(0.70f, float(k));
+        hw             = int(30.f * sc);
+        base           = vy + int(39.f * sc);
+        apex           = vy - int(36.f * sc);
+        spring         = apex + int(hw * 1.1f);
+    };
+    {
+        int hw, base, spring, apex;
+        arch(0, hw, base, spring, apex);
+        g.Line(vx - hw, base, vx, vy, D); // floor edges
+        g.Line(vx + hw, base, vx, vy, D);
+        g.Line(vx - hw, spring, vx, vy, D); // vault springs
+        g.Line(vx + hw, spring, vx, vy, D);
+        g.Line(0, kFxBot, vx - hw, base, D); // aisle floor out to the sides
+        g.Line(kSW - 1, kFxBot, vx + hw, base, D);
+    }
+    for(int k = arches - 1; k >= 0; k--)
+    {
+        int hw, base, spring, apex;
+        arch(k, hw, base, spring, apex);
+        const int shade = int(float(k) / reach);
+        if(shade > 3)
+            continue; // lost in the dark
+        const uint16_t c = kShade[shade];
+        g.VLine(vx - hw, spring, base, c);
+        g.VLine(vx + hw, spring, base, c);
+        // Vault: leaves the columns going up, bends in towards the apex
+        int px = vx - hw, py = spring;
+        for(int i = 1; i <= 12; i++)
+        {
+            const float t  = float(i) / 12.f * 1.5707963f;
+            const int   ax = vx - hw + int(lroundf(hw * (1.f - cosf(t))));
+            const int   ay = spring - int(lroundf((spring - apex) * sinf(t)));
+            g.Line(px, py, ax, ay, c);
+            g.Line(2 * vx - px, py, 2 * vx - ax, ay, c);
+            px = ax;
+            py = ay;
         }
-        else
-            g.TextCentered(44, 26, "SHIFT+ENC4: MIX", M, Gfx::kSmall);
+        if(k == arches - 1 && p.rev_tone > 0.4f && shade < 3)
+            g.Circle(vx, spring - (spring - apex) / 3, hw / 3 > 1 ? hw / 3 : 1, M); // rose window
     }
 
-    g.VLine(89, kBodyTop, kBodyBot, D, false); // divider
-
-    // ---- Chorus: a little choir. MIX sets how many are singing (1 silent
-    //      singer at MIX 0, up to 8), RATE how fast their mouths move.
-    g.Chip(92, 13, "CHORUS", Gfx::kSmall);
-    DrawChoir(g, s, frame);
+    // Echo rings spreading from the singer at the front, after PRE-DLY
+    const int sx = vx, sy = 74;
+    if(p.rev_mix > 0.001f)
+    {
+        const float gap    = 4.f + p.rev_predelay / 0.25f * 26.f; // PRE-DLY
+        const float travel = 18.f + p.rev_size * 46.f;
+        for(int r = 0; r < 4; r++)
+        {
+            const float ph  = fmodf(frame * 0.012f + r * 0.25f, 1.f);
+            const int   rad = int(gap + ph * travel);
+            const float b   = (1.f - ph) * (0.3f + p.rev_mix) * (0.5f + 0.6f * p.rev_tone);
+            if(b < 0.12f)
+                continue;
+            const uint16_t c = b > 0.75f ? W : (b > 0.45f ? L : (b > 0.25f ? M : D));
+            DrawEllipse(g, sx, sy, rad, rad * 2 / 5, c, ph > 0.5f);
+        }
+        // The direct sound: a small ring right at the singer
+        DrawEllipse(g, sx, sy, 3, 1, L, false);
+    }
+    // The singer (a tiny figure)
+    g.FillRect(sx - 1, sy - 9, 3, 3, W);
+    g.FillRect(sx - 2, sy - 6, 5, 6, p.rev_mix > 0.001f ? L : M);
+    g.SetClip(0, kBodyTop - 1, kSW - 1, kBodyBot);
 }
 
 void Ui::DrawFx(const UiState& s)
 {
-    if(s.grain_size_mode)
+    switch(FxPage(s.fx_page & 3))
     {
-        DrawFxPage2(g_, s, frame_);
-        return;
+        case FxPage::Filter: DrawFxFilter(g_, s, frame_); break;
+        case FxPage::Chorus: DrawFxChorus(g_, s, frame_); break;
+        case FxPage::Resonator: DrawFxResonator(g_, s, frame_); break;
+        case FxPage::Reverb: DrawFxReverb(g_, s, frame_); break;
     }
-    const Params& p = *s.params;
-
-    // ---- Filter -----------------------------------------------------------------
-    const int ftype = int(p.filter_type + 0.5f); // 0 LP, 1 HP, 2 BP
-    static const char* const kTypeNames[3] = {"LP", "HP", "BP"};
-    g_.Chip(1, 13, "FILTER", Gfx::kSmall);
-    g_.Text(33, 15, kTypeNames[ftype], s.shift ? W : L, Gfx::kSmall); // SHIFT+ENC1
-    const int top = 25, bot = 83, x0 = 3, w = 82;
-    for(int gx = x0 + 20; gx < x0 + w; gx += 21)
-        g_.VLine(gx, top, bot, D);
-    g_.HLine(x0, x0 + w, 45, D);
-
-    const float q    = 0.7f + p.reso * 4.f;
-    int         prev = 0;
-    for(int x = 0; x <= w; x++)
-    {
-        float xq  = float(x) / w;
-        float wn  = powf(10.f, (xq - p.cutoff) * 2.2f);
-        float num = ftype == 1 ? wn * wn : (ftype == 2 ? wn / q : 1.f);
-        float mag = num / sqrtf((1.f - wn * wn) * (1.f - wn * wn) + (wn / q) * (wn / q));
-        float db  = fmaxf(-36.f, fminf(12.f, 20.f * log10f(mag)));
-        int   y   = top + int((12.f - db) / 48.f * float(bot - top));
-        if(y < bot) // area under the curve: mid grey near the line, dark below
-        {
-            g_.VLine(x0 + x, y + 1, y + 3 < bot ? y + 3 : bot, M);
-            if(y + 4 < bot)
-                g_.VLine(x0 + x, y + 4, bot, D);
-        }
-        if(x > 0)
-            g_.Line(x0 + x - 1, prev, x0 + x, y, W);
-        prev = y;
-    }
-    g_.HLine(x0, x0 + w, bot, M);
-    int cx = x0 + int(p.cutoff * w); // cutoff marker
-    for(int y = top; y < bot; y += 2)
-        g_.Pixel(cx, y, L);
-
-    g_.VLine(89, kBodyTop, kBodyBot, D); // divider
-
-    // ---- Space (reverb) ---------------------------------------------------------------
-    g_.Chip(92, 13, "SPACE", Gfx::kSmall);
-    g_.SetClip(91, 23, kSW - 1, kBodyBot);
-    const int   ccx = 115, ccy = 53;
-    const float max_r = 6.f + p.rev_size * 22.f; // SIZE = how far rings travel
-    for(int r = 0; r < 4; r++)
-    {
-        float ph  = fmodf(frame_ * 0.9f + r * 25.f, 100.f) / 100.f;
-        int   rad = 3 + int(ph * max_r);
-        float b   = (1.f - ph) * (0.35f + p.rev_mix); // MIX = how bright
-        if(b > 0.6f) // rings fade white → light → mid → dark grey
-            g_.Circle(ccx, ccy, rad, W);
-        else if(b > 0.35f)
-            g_.Circle(ccx, ccy, rad, L);
-        else if(b > 0.18f)
-            g_.Circle(ccx, ccy, rad, M);
-        else if(b > 0.05f)
-            g_.Circle(ccx, ccy, rad, D);
-    }
-    g_.SetClip(0, kBodyTop - 1, kSW - 1, kBodyBot);
-    g_.FillRect(ccx - 1, ccy - 1, 3, 3, W);
-    g_.Pixel(ccx, ccy, B);
 }
 
 // =============================================================================
@@ -1130,14 +1278,74 @@ void Ui::DrawEnvGlyph(int right, int y, int shape, int w, int h)
     }
 }
 
+// The context the encoders are in, completed from the UiState
+static EncoderContext ContextOf(const UiState& s)
+{
+    EncoderContext c = s.enc;
+    c.page           = s.page;
+    c.fx_page        = s.fx_page;
+    c.grains_alt     = s.grain_size_mode;
+    c.shift          = s.shift;
+    return c;
+}
+
+// A parameter's value as text (START / free LENGTH in seconds of the loop)
+static void ValueText(const UiState& s, const ParamDesc& d, char* buf, size_t n)
+{
+    const TapeLoop& t        = *s.tape;
+    const float     v        = s.params->*(d.field);
+    const bool      free_len = d.field == &Params::length8 && !s.params->synced;
+    if(d.format == Format::Seconds || free_len)
+    {
+        float secs = 0.f;
+        if(t.HasLoop())
+            secs = (d.field == &Params::start ? t.RegionStart() : t.RegionLength()) / s.sample_rate;
+        static const ParamDesc kSecs
+            = {"", nullptr, 0.f, 1.f, 0.f, 0.f, false, false, Format::Seconds};
+        FormatValue(free_len ? kSecs : d, secs, 1.f, buf, n);
+    }
+    else
+        FormatValue(d, v, 1.f, buf, n);
+}
+
+// Big value popup while an encoder is being turned (~1 s): the name and the
+// value at double size, so it's clear what's changing, even for parameters
+// that aren't on the readouts (hold + turn, the FX mixer).
+void Ui::DrawPopup(const UiState& s)
+{
+    if(!s.popup || s.popup_age_ms > 1100)
+        return;
+    const ParamDesc& d = *s.popup;
+    const int x = 24, y = 30, w = 92, h = 36;
+    g_.FillRect(x, y, w, h, B);
+    g_.Rect(x, y, w, h, W);
+    g_.Rect(x + 1, y + 1, w - 2, h - 2, D);
+    g_.TextCentered(x + w / 2, y + 4, d.label, L, Gfx::kSmall);
+    const float v = s.params->*(d.field);
+    if(d.format == Format::EnvName)
+        DrawEnvGlyph(x + w / 2 + 15, y + 12, int(lroundf(v)), 30, 13);
+    else
+    {
+        char buf[12];
+        ValueText(s, d, buf, sizeof(buf));
+        const int k  = Gfx::TextWidthScaled(buf, Gfx::kBig, 2) > w - 8 ? 1 : 2;
+        const int tw = Gfx::TextWidthScaled(buf, Gfx::kBig, k);
+        g_.TextScaled(x + (w - tw) / 2, y + (k == 2 ? 11 : 15), buf, W, Gfx::kBig, k);
+    }
+    const float norm = (v - d.min) / (d.max - d.min);
+    g_.HLine(x + 6, x + w - 7, y + h - 6, D);
+    g_.HLine(x + 6, x + 6 + int(norm * (w - 13)), y + h - 6, L);
+    g_.HLine(x + 6, x + 6 + int(norm * (w - 13)), y + h - 5, L);
+}
+
 void Ui::DrawReadouts(const UiState& s)
 {
     g_.HLine(0, kSW - 1, kReadLine, D);
-    const TapeLoop& t = *s.tape;
+    const EncoderContext ctx = ContextOf(s);
     for(int i = 0; i < 4; i++)
     {
-        const ParamDesc* alt = OverrideParam(s.page, i, s.shift, s.grain_size_mode);
-        const ParamDesc& d   = alt ? *alt : kPageParams[int(s.page)][i];
+        bool             alt = false;
+        const ParamDesc& d   = EncoderParam(ctx, i, &alt);
         float            v   = s.params->*(d.field);
         int              x   = 2 + (i % 2) * 70;
         int              y   = kReadTop + (i / 2) * 11;
@@ -1153,20 +1361,7 @@ void Ui::DrawReadouts(const UiState& s)
         else
         {
             char buf[12];
-            // LENGTH while free (not synced): show the free length in seconds
-            const bool free_len = d.field == &Params::length8 && !s.params->synced;
-            if(d.format == Format::Seconds || free_len)
-            {
-                float secs = 0.f;
-                if(t.HasLoop())
-                    secs = (d.field == &Params::start ? t.RegionStart() : t.RegionLength())
-                           / s.sample_rate;
-                static const ParamDesc kSecs
-                    = {"", nullptr, 0.f, 1.f, 0.f, 0.f, false, false, Format::Seconds};
-                FormatValue(free_len ? kSecs : d, secs, 1.f, buf, sizeof(buf));
-            }
-            else
-                FormatValue(d, v, 1.f, buf, sizeof(buf));
+            ValueText(s, d, buf, sizeof(buf));
             g_.TextRight(right, y, buf, W, Gfx::kBig);
         }
 

@@ -10,25 +10,29 @@
 //                                on the LOOP page it opens the sample browser
 //                                for that track (from another page it jumps to
 //                                LOOP first)
-//   LOOP / GRAINS / FX buttons : choose which page the 4 encoders edit
+//   LOOP / GRAINS buttons      : choose which page the 4 encoders edit
 //   GRAINS again (on GRAINS)   : alt layer on/off: encoder 1 = grain SIZE,
 //                                encoder 3 = grain PITCH, encoder 4 =
 //                                ENVELOPE (labels inverted)
-//   FX again (on FX)           : FX page 2: resonator FREQ, BRIGHT, chorus
-//                                RATE, chorus MIX. With SHIFT: enc 1 =
-//                                STRUCTURE, enc 2 = DECAY, enc 4 = RES MIX
+//   FX (on release)            : FX pages, one effect each: FILTER → CHORUS
+//                                → RESONATOR → REVERB (FX again = next,
+//                                SHIFT + FX = previous)
+//   Hold FX + turn             : FX mixer from any page: CUTOFF, CHORUS MIX,
+//                                RES MIX, REVERB MIX (FX release then does
+//                                nothing)
+//   Hold an encoder + turn     : its second parameter, where it has one
+//                                (RESONATOR enc 2 = BRIGHT)
 //   SHIFT + T1 / T2            : mute / unmute that track
 //   Encoder turn               : edit that page's parameter (selected track)
-//   SHIFT + turn               : fine adjust (×0.1), or the alternate
+//   SHIFT + turn               : fine adjust (x0.1), or the alternate
 //                                parameter where one exists:
 //                                  LOOP enc 1 (START)  → BPM (both tracks)
 //                                  LOOP enc 2 (LENGTH) → FREE length
-//                                  FX enc 1 (CUTOFF)   → filter TYPE LP/HP/BP
 //   LENGTH                     : steps in 8th notes at the BPM. If the length
 //                                was free, the first turn snaps it back onto
 //                                the 8th-note grid.
 //   SHIFT + LENGTH             : free length, not locked to the BPM
-//   Encoder push               : reset that parameter to its default
+//   SHIFT + encoder push       : reset that parameter to its default
 //   REC                        : ARM: recording starts when input arrives.
 //                                Again while armed: cancel. While recording:
 //                                finish the take (→ it loops)
@@ -46,8 +50,10 @@
 //   While the browser is open  : any encoder turn moves, any push selects,
 //                                a track button or a page button closes it
 //
-// Reverb SIZE is shared by both tracks (one reverb), so editing it on either
-// track updates both. Every other parameter is per track.
+// Reverb SIZE / TONE / PRE-DLY are shared by both tracks (one reverb), as is
+// the BPM, so editing them on either track updates both. Every other
+// parameter is per track. Which parameter an encoder edits in each situation
+// is decided in one place: EncoderParam() in params.cpp.
 // =============================================================================
 #pragma once
 #include <cmath>
@@ -100,21 +106,37 @@ class Controls
         for(auto& b : page_btn_)
             b.Debounce();
 
+        now_ms_++;
+        shift_held_ = shift_.Pressed();
+
         // 2. Page selection (also closes the browser)
-        for(int i = 0; i < kNumPages; i++)
+        //    LOOP / GRAINS act on press. GRAINS again: its alt layer.
+        for(int i = 0; i < 2; i++)
             if(page_btn_[i].RisingEdge())
             {
-                // GRAINS or FX pressed again on its own page: alt layer
-                // (GRAINS: SIZE / PITCH / ENV; FX: resonator and chorus)
-                if(Page(i) == page_ && Page(i) != Page::Loop && !browser.IsOpen())
+                if(Page(i) == Page::Grains && page_ == Page::Grains && !browser.IsOpen())
                     grain_size_mode_ = !grain_size_mode_;
                 else if(Page(i) != page_)
                     grain_size_mode_ = false;
                 page_ = Page(i);
                 browser.Close();
             }
-
-        shift_held_ = shift_.Pressed();
+        //    FX acts on RELEASE, because holding it and turning an encoder is
+        //    the FX mixer: if an encoder moved while it was held, the release
+        //    does nothing. Otherwise: go to FX (at the last FX page), or if
+        //    already there, the next effect (SHIFT + FX: the previous one).
+        daisy::Switch& fx = page_btn_[int(Page::Fx)];
+        if(fx.RisingEdge())
+            fx_used_ = false;
+        fx_held_ = fx.Pressed() && !browser.IsOpen();
+        if(fx.FallingEdge() && !fx_used_)
+        {
+            if(page_ == Page::Fx && !browser.IsOpen())
+                fx_page_ = (fx_page_ + (shift_held_ ? kNumFxPages - 1 : 1)) % kNumFxPages;
+            grain_size_mode_ = false;
+            page_            = Page::Fx;
+            browser.Close();
+        }
 
         // 3. Track buttons: select → (on LOOP) open browser → close browser.
         //    SHIFT + track button: mute / unmute that track.
@@ -159,14 +181,25 @@ class Controls
         }
 
         // 5. Encoders edit the current page's parameters
+        const EncoderContext ctx = Context();
         for(int i = 0; i < 4; i++)
         {
-            // SHIFT layer / page alt layer / both (see params.cpp)
-            const ParamDesc* alt = OverrideParam(page_, i, shift_held_, grain_size_mode_);
-            const ParamDesc& d   = alt ? *alt : kPageParams[int(page_)][i];
+            // Which parameter (mixer / hold / SHIFT / alt layer / normal):
+            // see EncoderParam() in params.cpp
+            bool             alt = false;
+            const ParamDesc& d   = EncoderParam(ctx, i, &alt);
             float&           v   = p.*(d.field);
             int              inc = enc_[i].Increment();
-            const bool       push = enc_[i].RisingEdge();
+            // Push alone does nothing now (it's for hold + turn): SHIFT + push
+            // resets the parameter
+            const bool push = enc_[i].RisingEdge() && shift_held_;
+            if(inc != 0 && fx_held_)
+                fx_used_ = true; // FX was a modifier: don't change page on release
+            if(inc != 0 || push)
+            {
+                popup_    = &d; // big value popup on screen
+                popup_ms_ = now_ms_;
+            }
 
             // LENGTH ↔ FREE: carry the current length across when switching,
             // so the loop doesn't jump
@@ -232,7 +265,9 @@ class Controls
             }
 
             // Shared settings (one reverb, one tempo): keep both tracks equal
-            if(v != old && (d.field == &Params::rev_size || d.field == &Params::bpm))
+            if(v != old
+               && (d.field == &Params::rev_size || d.field == &Params::rev_tone
+                   || d.field == &Params::rev_predelay || d.field == &Params::bpm))
                 for(int t = 0; t < kNumTracks; t++)
                     params[t]->*(d.field) = v;
         }
@@ -244,7 +279,28 @@ class Controls
     bool shift() const { return shift_held_; }
     int  selected_track() const { return selected_track_; }
     bool metronome_on() const { return metronome_on_; }
-    bool grain_size_mode() const { return grain_size_mode_; } // page alt layer
+    bool grain_size_mode() const { return grain_size_mode_; } // GRAINS alt layer
+    int  fx_page() const { return fx_page_; }
+    bool fx_held() const { return fx_held_; }
+
+    // What the encoders edit right now (the UI shows the same thing)
+    EncoderContext Context()
+    {
+        EncoderContext c;
+        c.page       = page_;
+        c.fx_page    = fx_page_;
+        c.grains_alt = grain_size_mode_;
+        c.shift      = shift_held_;
+        c.fx_held    = fx_held_;
+        for(int i = 0; i < 4; i++)
+            if(enc_[i].Pressed())
+                c.held |= uint8_t(1u << i);
+        return c;
+    }
+
+    // Value popup: the last parameter turned, and how long ago (ms)
+    const ParamDesc* popup() const { return popup_; }
+    uint32_t         popup_age_ms() const { return now_ms_ - popup_ms_; }
     bool muted(int t) const { return muted_[t]; }
 
     // Length of one 8th note in samples
@@ -292,7 +348,13 @@ class Controls
     bool           shift_held_     = false;
     float          sr_             = 48000.f;
     bool           metronome_on_   = true;
-    bool           grain_size_mode_ = false; // page button pressed twice
+    bool           grain_size_mode_ = false; // GRAINS pressed twice
+    int            fx_page_  = 0;     // FxPage: FILTER / CHORUS / RESONATOR / REVERB
+    bool           fx_held_  = false; // FX button down: encoders = FX mixer
+    bool           fx_used_  = false; // an encoder moved while FX was down
+    uint32_t       now_ms_   = 0;     // Process() runs at 1 kHz
+    const ParamDesc* popup_  = nullptr;
+    uint32_t       popup_ms_ = 0;
     bool           muted_[kNumTracks] = {false, false};
 };
 

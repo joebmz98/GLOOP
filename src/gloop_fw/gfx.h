@@ -269,6 +269,23 @@ class Gfx
         Text(right - TextWidth(s, f) + 1, y, s, c, f);
     }
 
+    // Text at k times the size (big value popup). Same fonts, each font
+    // pixel drawn as a k x k block.
+    void TextScaled(int x, int y, const char* str, uint16_t c, Font f, int k)
+    {
+        glyph_k_ = k;
+        for(; *str; str++)
+        {
+            if(f == kSmall)
+                Glyph3x5(x, y, *str, c);
+            else
+                Glyph5x7(x, y, *str, c);
+            x += Advance(f) * k;
+        }
+        glyph_k_ = 1;
+    }
+    static int TextWidthScaled(const char* s, Font f, int k) { return TextWidth(s, f) * k; }
+
     // Text on a filled chip (black text on white), returns chip width
     int Chip(int x, int y, const char* s, Font f)
     {
@@ -279,6 +296,16 @@ class Gfx
     }
 
   private:
+    int glyph_k_ = 1; // TextScaled: font pixel size
+
+    inline void GlyphPixel(int x, int y, int col, int row, uint16_t c)
+    {
+        if(glyph_k_ == 1)
+            Pixel(x + col, y + row, c);
+        else
+            FillRect(x + col * glyph_k_, y + row * glyph_k_, glyph_k_, glyph_k_, c);
+    }
+
     static int Index(char ch, const char* map)
     {
         if(ch >= 'a' && ch <= 'z')
@@ -315,7 +342,7 @@ class Gfx
         for(int row = 0; row < 5; row++)
             for(int col = 0; col < 3; col++)
                 if(kG[i][row] & (4 >> col))
-                    Pixel(x + col, y + row, c);
+                    GlyphPixel(x, y, col, row, c);
     }
 
     // 5x7: column-major, bit 0 = top row
@@ -352,7 +379,7 @@ class Gfx
         for(int col = 0; col < 5; col++)
             for(int row = 0; row < 7; row++)
                 if(kG[i][col] & (1 << row))
-                    Pixel(x + col, y + row, c);
+                    GlyphPixel(x, y, col, row, c);
     }
 
     uint16_t* fb_ = nullptr;
