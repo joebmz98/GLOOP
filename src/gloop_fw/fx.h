@@ -287,7 +287,7 @@ class ModalResonator
         float harmonic = f0, stretch = 1.f;
 
         n_ = 0;
-        for(int i = 0; i < kModes; i++)
+        for(int i = 0; i < max_modes_; i++)
         {
             const float f = harmonic * stretch;
             if(f >= 0.45f)
@@ -337,6 +337,10 @@ class ModalResonator
         l += mix_ * (wl - l);
         r += mix_ * (wr - r);
     }
+
+    // Load governor: fewer modes when the CPU is busy (6..16). The highest
+    // modes go first; they're the quietest, so it mostly dulls the top end.
+    void SetMaxModes(int n) { max_modes_ = n < 1 ? 1 : (n > kModes ? kModes : n); }
 
     float Level() const { return active_ ? level_ : 0.f; } // UI meter
     int   Modes() const { return n_; }
@@ -389,6 +393,7 @@ class ModalResonator
     float sr_ = 48000.f, freq_ = 130.8f, mix_ = 0.f;
     bool  active_ = false;
     int   n_      = 0;
+    int   max_modes_ = kModes;
     float g_[kModes], rg_[kModes], h_[kModes], al_[kModes], ar_[kModes];
     float s1_[kModes], s2_[kModes];
     float in_acc_ = 0.f, wet_acc_ = 0.f, in_ms_ = 0.f, wet_ms_ = 0.f, gain_ = 1.f, level_ = 0.f;

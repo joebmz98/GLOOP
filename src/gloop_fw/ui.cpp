@@ -1363,6 +1363,20 @@ void Ui::DrawReadouts(const UiState& s)
         {
             char buf[12];
             ValueText(s, d, buf, sizeof(buf));
+            // GRAINS limited by the shared pool: "8/12" (gets / asked for)
+            const int want = int(v + 0.5f);
+            if(d.field == &Params::grains && s.grains_allowed >= 0 && s.grains_allowed < want)
+            {
+                int k = 0;
+                if(s.grains_allowed >= 10)
+                    buf[k++] = char('0' + s.grains_allowed / 10);
+                buf[k++] = char('0' + s.grains_allowed % 10);
+                buf[k++] = '/';
+                if(want >= 10)
+                    buf[k++] = char('0' + want / 10);
+                buf[k++] = char('0' + want % 10);
+                buf[k]   = 0;
+            }
             g_.TextRight(right, y, buf, W, Gfx::kBig);
         }
 

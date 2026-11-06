@@ -32,8 +32,8 @@ void St7789::Init()
 
     if(kFastSpi)
     {
-        // SPI1/2/3 kernel clock: PLL2P (50 MHz) → PLL1Q (160 MHz), so the
-        // ÷4 prescaler gives 40 MHz. Must happen before SPI.begin(), which
+        // SPI1/2/3 kernel clock: PLL2P (50 MHz) → PLL1Q (192 MHz), so the
+        // ÷4 prescaler gives 48 MHz. Must happen before SPI.begin(), which
         // reads this clock to pick the prescaler.
         __HAL_RCC_PLLCLKOUT_ENABLE(RCC_PLL1_DIVQ);
         __HAL_RCC_SPI123_CONFIG(RCC_SPI123CLKSOURCE_PLL);

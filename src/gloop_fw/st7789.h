@@ -11,7 +11,8 @@
 // Speed (a full 280x240 frame is 134 KB):
 //  * SPI clock: SPI1 runs from PLL2P = 50 MHz and divides by powers of 2, so
 //    the choices are 25 MHz, 12.5 MHz, ... (a 20 MHz request gives 12.5).
-//    kFastSpi moves SPI1 onto PLL1Q (160 MHz) for 40 MHz.
+//    kFastSpi moves SPI1 onto PLL1Q (192 MHz at 480 MHz CPU, see clock.cpp)
+//    for 48 MHz.
 //  * Dirty bands: Flush() compares the frame with a copy of what the panel
 //    already shows and only sends the changed part of each 8-row band. Most
 //    frames only change a few small areas (reels, rain, meters).
@@ -38,10 +39,10 @@ class St7789
     static constexpr uint8_t kMadctl = 0x60;
 
     // SPI clock. false: 25 MHz (fine on a breadboard with short wires).
-    // true: 40 MHz, for a PCB or very short wires; if the picture shows
-    // speckles or shifted colours, go back to false.
+    // true: 48 MHz (PLL1Q 192 MHz / 4), for a PCB or very short wires; if the
+    // picture shows speckles or shifted colours, go back to false.
     static constexpr bool     kFastSpi = false;
-    static constexpr uint32_t kSpiHz   = kFastSpi ? 40000000 : 25000000;
+    static constexpr uint32_t kSpiHz   = kFastSpi ? 48000000 : 25000000;
 
     void      Init();
     uint16_t* Framebuffer();

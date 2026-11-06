@@ -99,12 +99,14 @@ SPI1's clock divides by powers of 2 (50 MHz → 25 or 12.5 MHz). For 40 MHz, set
 
 | Limit | Value | Where |
 |---|---|---|
-| Grain voices per track | 12 (36 across the three tracks; the CPU safety valve thins them if all are maxed) | `GrainCloud::kMaxGrains` (`grains.h`) |
+| Grain voices | 12 per track, but a **shared pool of 16** across all tracks: if the playing tracks ask for more, each gets a fair share (e.g. 12 + 12 → 8 + 8, shown as `8/12` on GRAINS) | `kGrainPool` (`gloop_fw.ino`) |
 | Loop length per track | 30 s (16-bit stereo, 5.8 MB; 17.3 MB of the 64 MB SDRAM for three) | `kMaxLoopSeconds` (`gloop_fw.ino`) |
-| CPU safety valve | stops new grains above 80% average / 90% peak, resumes below 70% | `gloop_fw.ino` |
+| Load governor | above 85% on any block (or 80% average) the grain pool and the resonators' modes shrink within ~15 ms (down to a quarter), and grow back over ~1.5 s once the average is under 65% | `gloop_fw.ino` |
+| CPU safety valve | also stops new grains above 80% avg / 90% peak, resumes below 70% | `gloop_fw.ino` |
+| CPU clock | **480 MHz** (the board default is 400) | `clock.cpp` (`kBoost480`) |
 | Output | soft limiter from 0.8 of full scale | `OutputLimit()` (`gloop_fw.ino`) |
 
-Hold SHIFT to read the audio CPU load: **PK** (worst block in the last second) and **CPU** (average). Cost scales with active grains, not loop length.
+Hold SHIFT to read the audio CPU load: **PK** (worst block in the last second) and **CPU** (average). CPU is shown inverted while the governor or safety valve is holding things back. Cost scales with active grains, resonators and the reverb, not loop length.
 
 ## Files
 
@@ -120,6 +122,7 @@ Hold SHIFT to read the audio CPU load: **PK** (worst block in the last second) a
 | `browser.h` | Sample browser state + sample library (stand-in until SD) |
 | `params.h/.cpp` | Parameter struct, page map, value formatting |
 | `cpu_meter.h` | Audio CPU load from the Cortex-M7 cycle counter |
+| `clock.cpp` | Runs the CPU at 480 MHz (replaces the board's 400 MHz clock setup; `kBoost480 = false` to undo) |
 | `st7789.h/.cpp` | Display driver (Arduino SPI at 25 MHz, landscape); sends only the parts of the screen that changed |
 | `gfx.h` | Greyscale pixel-art drawing, 3×5 and 5×7 fonts |
 | `ui.h/.cpp` | LOOP / GRAINS / FX screens and the sample browser |

@@ -29,6 +29,8 @@ struct UiState
     float             cpu_peak  = 0.f;   // worst block in the last second
     bool              throttled = false; // safety valve is limiting grains
     int               fps       = 0;     // screen frames in the last second
+    int               grains_allowed = -1; // grains this track actually gets
+                                           // from the shared pool (-1: n/a)
 
     // Sample browser / loading
     const Browser* browser        = nullptr; // menu shown when open

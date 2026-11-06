@@ -138,6 +138,22 @@ static constexpr float kThrottleHot = 0.90f; // or any single block above this
 static constexpr float kThrottleOff = 0.70f; // average load to stop limiting
 static volatile bool   throttled    = false;
 
+// ---- Shared grain pool + load governor -----------------------------------------
+// All tracks share kGrainPool grain voices. Each track asks for its GRAINS
+// setting (only while it's playing); if the total is more than the pool, every
+// track gets a fair share in proportion to what it asked for (e.g. 12 + 12
+// with a pool of 16 → 8 + 8). The level match uses the real count, so a
+// track getting fewer grains doesn't get quieter.
+//
+// The governor shrinks the pool AND the resonators' mode count when the CPU
+// runs hot (fast: ~15 ms), and lets them grow back slowly once it's calm
+// (~1.5 s), so a heavy patch thins out a little instead of crackling.
+static constexpr int   kGrainPool   = 16;    // voices across all tracks
+static constexpr float kGovHot      = 0.85f; // any block above this: shrink
+static constexpr float kGovCalm     = 0.65f; // average below this: grow back
+static float           gov_scale    = 1.f;   // 0.25..1
+static volatile int    grains_allowed[kNumTracks] = {};
+
 // =============================================================================
 // Audio
 // =============================================================================
@@ -168,6 +184,10 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
         throttled = true;
     else if(throttled && cpu.Avg() < kThrottleOff)
         throttled = false;
+    if(cpu.Last() > kGovHot || cpu.Avg() > kThrottleOn)
+        gov_scale = fmaxf(0.25f, gov_scale - 0.05f);
+    else if(cpu.Avg() < kGovCalm)
+        gov_scale = fminf(1.f, gov_scale + 0.0007f);
 
     // ---- 1. Controls (1 kHz), acting on the selected track ----
     controls.Process(track_params, track_tapes, browser);
@@ -200,6 +220,39 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
     bool any_send = false;
     bool grain_mode[kNumTracks];
     bool playing[kNumTracks];
+
+    // Share the grain pool between the playing tracks (see above)
+    int want[kNumTracks], allow[kNumTracks], total = 0, users = 0;
+    for(int t = 0; t < kNumTracks; t++)
+    {
+        want[t] = tracks[t].tape.IsPlaying() ? int(tracks[t].params.grains + 0.5f) : 0;
+        total += want[t];
+        users += want[t] > 0;
+    }
+    int pool = int(kGrainPool * gov_scale + 0.5f);
+    pool     = pool < users ? users : pool; // at least 1 each
+    if(total <= pool)
+        for(int t = 0; t < kNumTracks; t++)
+            allow[t] = want[t];
+    else
+    {
+        int given = 0;
+        for(int t = 0; t < kNumTracks; t++)
+        {
+            allow[t] = want[t] > 0 ? (want[t] * pool) / total : 0;
+            if(want[t] > 0 && allow[t] < 1)
+                allow[t] = 1;
+            given += allow[t];
+        }
+        for(int t = 0; given < pool && t < kNumTracks; t++) // hand out the rest
+            if(allow[t] < want[t])
+            {
+                allow[t]++;
+                given++;
+            }
+    }
+    const int res_modes = int(ModalResonator::kModes * gov_scale + 0.5f);
+
     for(int t = 0; t < kNumTracks; t++)
     {
         Track&        tr   = tracks[t];
@@ -220,10 +273,12 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
             tr.cloud.Reset(); // (re)started: begin with a fresh grain cloud
         was_playing[t] = playing[t];
         tr.cloud.SetThrottle(throttled);
-        tr.cloud.SetParams(count, p.grain_size, p.spray, p.spread, int(p.envelope + 0.5f), rate,
+        grains_allowed[t] = playing[t] ? allow[t] : count;
+        tr.cloud.SetParams(playing[t] ? allow[t] : count, p.grain_size, p.spray, p.spread, int(p.envelope + 0.5f), rate,
                            powf(2.f, p.grain_pitch / 12.f)); // grains-only pitch
         tr.filter.SetParams(p.cutoff, p.reso, p.filter_type, p.filter_drive);
         tr.chorus.SetParams(p.chorus_rate, p.chorus_depth, p.chorus_width, p.chorus_mix);
+        tr.res.SetMaxModes(res_modes < 6 ? 6 : res_modes);
         tr.res.SetParams(p.res_note, p.res_bright, p.res_struct, p.res_decay, p.res_mix);
         any_send |= p.rev_mix > 0.0005f;
 
@@ -471,7 +526,8 @@ void loop()
         UiState   s{controls.page(), controls.shift(), &tr.params, &tr.tape, &tr.cloud, sample_rate};
         s.cpu_avg       = cpu.Avg();
         s.cpu_peak      = cpu.Peak();
-        s.throttled     = throttled;
+        s.throttled     = throttled || gov_scale < 0.99f;
+        s.grains_allowed = grains_allowed[sel];
         s.browser       = &browser;
         s.track         = sel;
         for(int o = 0, k = 0; o < kNumTracks; o++) // the other tracks (footer)
