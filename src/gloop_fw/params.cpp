@@ -38,7 +38,7 @@ const char* const kFxPageNames[kNumFxPages] = {"FILTER", "CHORUS", "RESONATOR", 
 static const ParamDesc kFxParams[kNumFxPages][4] = {
     {{"CUTOFF", &Params::cutoff, 0.f, 1.f, 0.01f, 1.f, false, false, Format::Hertz},
      {"RESO", &Params::reso, 0.f, 1.f, 0.01f, 0.f, false, false, Format::Percent},
-     {"TYPE", &Params::filter_type, 0.f, 2.f, 1.f, 0.f, true, true, Format::FilterType},
+     {"TYPE", &Params::filter_type, 0.f, 3.f, 1.f, 0.f, true, true, Format::FilterType},
      {"DRIVE", &Params::filter_drive, 0.f, 1.f, 0.01f, 0.f, false, false, Format::Percent}},
     {{"RATE", &Params::chorus_rate, 0.f, 1.f, 0.01f, 0.3f, false, false, Format::LfoHz},
      {"DEPTH", &Params::chorus_depth, 0.f, 1.f, 0.01f, 0.6f, false, false, Format::Percent},
@@ -216,9 +216,9 @@ void FormatValue(const ParamDesc& d,
             break;
         case Format::FilterType:
         {
-            static const char* const kTypes[3] = {"LP", "HP", "BP"};
+            static const char* const kTypes[4] = {"LP", "HP", "BP", "COMB"};
             int i = (int)lroundf(v);
-            Append(out, p, n, kTypes[i < 0 ? 0 : (i > 2 ? 2 : i)]);
+            Append(out, p, n, kTypes[i < 0 ? 0 : (i > 3 ? 3 : i)]);
             break;
         }
         case Format::Note:

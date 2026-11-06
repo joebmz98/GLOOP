@@ -10,10 +10,11 @@
 //   track 2 ─ filter ─ chorus ─ reson ┬─ x(1 - MIX2) ──────────────┤
 //                                      └─ x MIX2 ──┴─ ReverbSc ─ wet ┴─► out
 //
-//  * TrackFilter: stereo state-variable filter, LP / HP / BP (SHIFT +
-//    CUTOFF), crossfaded over 5 ms when the type changes. CUTOFF is exponential
-//    (40 Hz × 450^x ≈ 40 Hz..18 kHz) and smoothed so encoder steps don't
-//    zipper. RESO is capped below self-oscillation.
+//  * TrackFilter: stereo state-variable filter, LP / HP / BP, plus a tuned
+//    feedback COMB (TYPE), crossfaded over 5 ms when the type changes. CUTOFF
+//    is exponential (40 Hz × 450^x ≈ 40 Hz..18 kHz) and smoothed so encoder
+//    steps don't zipper. RESO is capped below self-oscillation. In COMB,
+//    CUTOFF is the comb's pitch (50 Hz..12 kHz) and RESO its feedback.
 //  * ReverbBus: ONE ReverbSc shared by both tracks (it's one of the most
 //    expensive things in GLOOP). Each track's MIX is its send level; SIZE,
 //    TONE (damping low-pass) and PRE-DLY (up to 250 ms before the reverb)
@@ -37,17 +38,22 @@ namespace gloop
 class TrackFilter
 {
   public:
+    static constexpr int kComb    = 3;    // TYPE index of the comb
+    static constexpr int kCombLen = 1024; // ~21 ms → lowest comb pitch ~47 Hz
+
     void Init(float sample_rate)
     {
+        sr_ = sample_rate;
         for(auto& f : svf_)
         {
             f.Init(sample_rate);
             f.SetDrive(0.f);
         }
         cutoff_hz_ = 18000.f;
+        ClearComb();
     }
 
-    // Block rate. type: 0 = low-pass, 1 = high-pass, 2 = band-pass.
+    // Block rate. type: 0 = low-pass, 1 = high-pass, 2 = band-pass, 3 = comb.
     // drive 0..1: pushes the signal into the filter through a soft clip
     // (gain up to x16, with make-up gain so it gets grittier, not louder).
     // The clipped harmonics then go through the filter, so a low CUTOFF
@@ -73,9 +79,20 @@ class TrackFilter
         // so BP sits at about the same level as LP/HP
         bp_gain_ = 1.f + (1.f - powf(res, 0.25f));
 
+        // Comb: CUTOFF is the pitch (delay = one period), RESO the feedback
+        const float comb_hz = fminf(kCombMaxHz, fmaxf(kCombMinHz, cutoff_hz_));
+        comb_target_        = sr_ / comb_hz;
+        comb_fb_            = CombFeedback(reso);
+        comb_comp_          = CombMakeup(comb_fb_);
+
         const int t = int(type + 0.5f);
         if(t != type_) // switch types with a ~5 ms crossfade (no click)
         {
+            if(t == kComb && !CombRunning())
+            {
+                ClearComb(); // don't replay whatever was left in the line
+                comb_delay_ = comb_target_;
+            }
             prev_type_ = type_;
             type_      = t;
             xf_        = 0.f;
@@ -90,16 +107,25 @@ class TrackFilter
             l = SoftClip(l * gain_) * makeup_;
             r = SoftClip(r * gain_) * makeup_;
         }
-        svf_[0].Process(l);
-        svf_[1].Process(r);
+        const bool fading = xf_ < 1.f;
+        // Only run what's audible: the SVF or the comb (both while fading
+        // between them)
+        if(type_ != kComb || (fading && prev_type_ != kComb))
+        {
+            svf_[0].Process(l);
+            svf_[1].Process(r);
+        }
+        if(CombRunning())
+            ProcessComb(l, r);
         l = Out(0, type_);
         r = Out(1, type_);
-        if(xf_ < 1.f)
+        if(fading)
         {
             xf_ += 1.f / 240.f;
             const float k = xf_ > 1.f ? 1.f : xf_;
-            l = Out(0, prev_type_) + k * (l - Out(0, prev_type_));
-            r = Out(1, prev_type_) + k * (r - Out(1, prev_type_));
+            const float pl = Out(0, prev_type_), pr = Out(1, prev_type_);
+            l = pl + k * (l - pl);
+            r = pr + k * (r - pr);
         }
     }
 
@@ -113,10 +139,62 @@ class TrackFilter
         return x * (27.f + x2) / (27.f + 9.f * x2);
     }
 
+    // Shared with the UI so the drawn comb matches what you hear
+    static constexpr float kCombMinHz = 50.f;
+    static constexpr float kCombMaxHz = 12000.f;
+    static constexpr float kCombDamp  = 0.7f; // one-pole low-pass in the loop
+    static inline float CombFeedback(float reso) { return reso * 0.97f; }
+    // Keeps broadband material at a similar loudness as RESO rises; tones
+    // that land on a tooth are held in check by the soft clip in the loop
+    static inline float CombMakeup(float fb) { return 1.25f / (1.f + 0.8f * fb * fb); }
+
   private:
+    inline bool CombRunning() const { return type_ == kComb || (xf_ < 1.f && prev_type_ == kComb); }
+
+    void ClearComb()
+    {
+        for(auto& ch : comb_buf_)
+            for(auto& v : ch)
+                v = 0.f;
+        comb_lp_[0] = comb_lp_[1] = 0.f;
+        comb_out_[0] = comb_out_[1] = 0.f;
+    }
+
+    // Feedback comb with a damping low-pass and a soft clip in the loop.
+    // Output = (dry + delayed) / 2, so even at RESO 0 it's a feed-forward
+    // comb (flanger-like notches); RESO adds feedback until it rings at the
+    // CUTOFF pitch and its harmonics. The delay glides per sample (~4 ms),
+    // so sweeping CUTOFF bends the pitch instead of clicking.
+    inline void ProcessComb(float l, float r)
+    {
+        comb_delay_ += 0.005f * (comb_target_ - comb_delay_);
+        float pos = float(comb_w_) - comb_delay_;
+        if(pos < 0.f)
+            pos += float(kCombLen);
+        const int   i0 = int(pos);
+        const int   i1 = (i0 + 1) & (kCombLen - 1);
+        const float f  = pos - float(i0);
+        const float in[2] = {l, r};
+        for(int ch = 0; ch < 2; ch++)
+        {
+            const float* b = comb_buf_[ch];
+            const float  d = b[i0] + f * (b[i1] - b[i0]);
+            comb_lp_[ch] += kCombDamp * (d - comb_lp_[ch]);
+            comb_buf_[ch][comb_w_] = SoftClip(in[ch] + comb_fb_ * comb_lp_[ch]);
+            comb_out_[ch]          = 0.5f * (in[ch] + comb_lp_[ch]) * comb_comp_;
+        }
+        comb_w_ = (comb_w_ + 1) & (kCombLen - 1);
+    }
+
     inline float Out(int ch, int type)
     {
-        return type == 1 ? svf_[ch].High() : (type == 2 ? svf_[ch].Band() * bp_gain_ : svf_[ch].Low());
+        switch(type)
+        {
+            case 1: return svf_[ch].High();
+            case 2: return svf_[ch].Band() * bp_gain_;
+            case kComb: return comb_out_[ch];
+            default: return svf_[ch].Low();
+        }
     }
 
     daisysp::Svf svf_[2];
@@ -125,9 +203,20 @@ class TrackFilter
     float        xf_        = 1.f;
     float        bp_gain_   = 2.f;
     float        cutoff_hz_ = 18000.f;
+    float        sr_        = 48000.f;
     bool         drive_on_  = false;
     float        gain_      = 1.f;
     float        makeup_    = 1.f;
+
+    // Comb
+    float comb_buf_[2][kCombLen];
+    int   comb_w_      = 0;
+    float comb_delay_  = 100.f; // samples, glides toward comb_target_
+    float comb_target_ = 100.f;
+    float comb_fb_     = 0.f;
+    float comb_comp_   = 1.25f;
+    float comb_lp_[2]  = {0.f, 0.f};
+    float comb_out_[2] = {0.f, 0.f};
 };
 
 // -----------------------------------------------------------------------------

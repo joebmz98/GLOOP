@@ -1,6 +1,6 @@
 # GLOOP — 2-track granular looper firmware
 
-Daisy Seed firmware, built with the Arduino IDE. Three tracks, each: tape looper → grain cloud → filter (LP/HP/BP) → chorus → resonator, mixed into one shared reverb. 240×280 ST7789 TFT (landscape) and a sample browser.
+Daisy Seed firmware, built with the Arduino IDE. Three tracks, each: tape looper → grain cloud → filter (LP/HP/BP/COMB) → chorus → resonator, mixed into one shared reverb. 240×280 ST7789 TFT (landscape) and a sample browser.
 
 ## Arduino IDE setup (once)
 
@@ -56,7 +56,7 @@ D1–D6 are also the Seed's SD card pins: when SD loading is added, the buttons 
 |---|---|---|---|---|
 | LOOP | Start · SHIFT: **BPM** | Length (8th notes) · SHIFT: **free length** | Pitch (±24 st) | Crossfade (0–1 s) |
 | GRAINS | Grains (0 = loop only, 1–12 = grains on top of the loop) · alt: **Size** | Spray | Spread · alt: **Grain pitch** (±24 st) | Mix (loop ↔ grains, default 50%) · alt: **Envelope** |
-| FX ▪ FILTER | Cutoff | Resonance | Type (LP / HP / BP) | Drive |
+| FX ▪ FILTER | Cutoff | Resonance | Type (LP / HP / BP / COMB) | Drive |
 | FX ▪ CHORUS | Rate | Depth | Width | Mix |
 | FX ▪ RESONATOR | Freq (note) | Structure · hold + turn: **Bright** | Decay | Mix |
 | FX ▪ REVERB | Size | Tone | Pre-delay | Mix |
@@ -88,7 +88,8 @@ The panel has rounded corners, so the header and footer keep 14 px (logical, 28 
 - **Hold FX and turn** = the **FX mixer**, from any page, without leaving it: encoder 1 = filter cutoff, 2 = chorus mix, 3 = resonator mix, 4 = reverb mix. The header shows **FX MIX** and the readouts switch to the mixer while FX is held. (FX acts when you *release* it, so holding it to use the mixer doesn't change page.)
 - **Hold an encoder in and turn it** for its second parameter, where it has one: on RESONATOR, encoder 2 = **BRIGHT** (also shown top right of the picture). Elsewhere hold + turn is the same as turning.
 - **Value popup:** while you turn an encoder, its name and value show large in the middle of the screen for about a second. Useful for the mixer and hold + turn, whose values aren't on the readouts.
-- **FILTER:** TYPE switches **LP / HP / BP** with a 5 ms crossfade. If the filter was wide open it stays open for the new type (e.g. HP moves CUTOFF to the bottom); SHIFT + push on CUTOFF resets it to the open position for the current type. **DRIVE** pushes the sound through a soft clip into the filter, with make-up gain so it gets grittier rather than louder (0 = clean). The picture: the response curve across the screen, shimmering with heat when driven, plus a small sine top right that squashes as DRIVE goes up.
+- **FILTER:** TYPE switches **LP / HP / BP / COMB** with a 5 ms crossfade. If the filter was wide open it stays open for the new type (e.g. HP moves CUTOFF to the bottom); SHIFT + push on CUTOFF resets it to the open position for the current type. **DRIVE** pushes the sound through a soft clip into the filter, with make-up gain so it gets grittier rather than louder (0 = clean). The picture: the response curve across the screen, shimmering with heat when driven, plus a small sine top right that squashes as DRIVE goes up.
+- **COMB:** a tuned feedback comb. CUTOFF is its pitch (50 Hz..12 kHz; it glides rather than clicks when swept) and RESO is the feedback: at 0 it's a static flanger-like notch comb, turned up it rings at that pitch and its harmonics, with a damping low-pass and a soft clip in the loop so it darkens as it rings and can't run away. Its CUTOFF reset (SHIFT + push) is the middle (~850 Hz), and switching away from COMB leaves CUTOFF where it is. DRIVE still works in front of it. The picture shows the comb's teeth. Costs ~8 KB of RAM per track (a 1024-sample stereo delay line); the SVF is skipped while COMB is selected.
 - **CHORUS:** RATE 0.05–10 Hz, DEPTH ±0.5–8 ms, WIDTH from mono (L and R sweep together) to widest (half a cycle apart), MIX 0 = off. The picture is a little choir: one silent singer at MIX 0 and up to eight singing at 100%; they stand further apart with WIDTH, sway more with DEPTH and sing in time with RATE.
 - **RESONATOR** (DaisySP's Rings-style modal resonator): FREQ is the note it rings at (C1–C7, e.g. `A2`); STRUCT 0–25% squeezed overtones, 25–30% harmonic (string / tube), above that stretched and inharmonic (bar, bell); DECAY from a dull knock to a ~30 s drone (DaisySP's "damping"; higher = rings longer); BRIGHT (hold encoder 2 + turn) from wood to glass; **MIX 0% = off** (the default, and then it costs no CPU). Its level is matched to the input automatically. The picture is a wine glass played with a wet finger: FREQ is the water level (more water = lower note), STRUCT morphs the glass from a narrow flute to a wide bowl, BRIGHT makes it shine, DECAY sets how many sound waves ripple out; the finger only circles the rim while MIX is up.
 - **REVERB:** SIZE (feedback), TONE (damping, 1–18 kHz: dark → bright), **PRE-DLY** (0–250 ms before the reverb starts, so the dry sound stays clear) and MIX (this track's send). SIZE, TONE and PRE-DLY are shared by all tracks (one reverb); MIX is per track. The picture is a cathedral nave: SIZE adds arches, TONE lets you see further down it, and the echo rings leave the singer after a gap set by PRE-DLY.
@@ -127,7 +128,7 @@ Hold SHIFT to read the audio CPU load: **PK** (worst block in the last second) a
 | `tape_loop.h` | 16-bit interleaved record buffer, record-arm with pre-roll, loop region, play head, seam crossfade |
 | `grains.h` | Grain pool (12 voices), block-based renderer, spray/spread/envelope, CPU throttle |
 | `envelopes.h` | 10 grain window lookup tables + level compensation |
-| `fx.h` | Per-track filter (LP/HP/BP + drive), stereo chorus and modal resonator + one shared ReverbSc with pre-delay (idles when every MIX is 0) |
+| `fx.h` | Per-track filter (LP/HP/BP/COMB + drive), stereo chorus and modal resonator + one shared ReverbSc with pre-delay (idles when every MIX is 0) |
 | `controls.h` | Encoders/buttons → params, transport, track buttons, browser |
 | `browser.h` | Sample browser state + sample library (stand-in until SD) |
 | `params.h/.cpp` | Parameter struct, page map, value formatting |

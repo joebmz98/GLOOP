@@ -893,8 +893,8 @@ static void ValueTag(Gfx& g, int right, int y, const char* label, float v01, uin
 static void DrawFxFilter(Gfx& g, const UiState& s, uint32_t frame)
 {
     const Params& p     = *s.params;
-    const int     ftype = int(p.filter_type + 0.5f); // 0 LP, 1 HP, 2 BP
-    static const char* const kTypeNames[3] = {"LP", "HP", "BP"};
+    const int     ftype = int(p.filter_type + 0.5f); // 0 LP, 1 HP, 2 BP, 3 COMB
+    static const char* const kTypeNames[4] = {"LP", "HP", "BP", "COMB"};
     const int cw = g.Chip(1, 13, "FILTER", Gfx::kSmall);
     g.Text(cw + 4, 15, kTypeNames[ftype], L, Gfx::kSmall);
 
@@ -922,28 +922,75 @@ static void DrawFxFilter(Gfx& g, const UiState& s, uint32_t frame)
 
     const float q    = 0.7f + p.reso * 4.f;
     const float heat = p.filter_drive * 1.8f;
-    int         prev = 0;
+    const bool  comb = ftype == 3;
+    // Comb: same maths as TrackFilter (fx.h): 50 Hz..12 kHz, feedback
+    // RESO × 0.97, one-pole damping 0.7 in the loop, (dry + wet) / 2
+    const float comb_hz = fminf(12000.f, fmaxf(50.f, 40.f * powf(450.f, p.cutoff)));
+    const float comb_fb = p.reso * 0.97f;
+    const float comb_k  = 1.25f / (1.f + 0.8f * comb_fb * comb_fb);
+    auto        comb_db = [&](float xq) {
+        const float hz = 40.f * powf(450.f, xq);
+        const float w0 = 6.2831853f * hz / 48000.f; // per-sample angle
+        // damping low-pass: a / (1 - (1 - a) e^-jw)
+        const float a = 0.7f, bre = 1.f - (1.f - a) * cosf(w0), bim = (1.f - a) * sinf(w0);
+        const float bb = bre * bre + bim * bim;
+        const float lre = a * bre / bb, lim = -a * bim / bb;
+        // delay e^-jwD with D = one period of the comb pitch
+        const float th = 6.2831853f * hz / comb_hz;
+        const float zre = cosf(th) * lre + sinf(th) * lim; // e^-jth × LP
+        const float zim = cosf(th) * lim - sinf(th) * lre;
+        // wet = z / (1 - fb z), out = (1 + wet) / 2
+        const float dre = 1.f - comb_fb * zre, dim = -comb_fb * zim;
+        const float dd  = dre * dre + dim * dim;
+        const float wre = (zre * dre + zim * dim) / dd, wim = (zim * dre - zre * dim) / dd;
+        const float ore = 0.5f * (1.f + wre) * comb_k, oim = 0.5f * wim * comb_k;
+        return 10.f * log10f(ore * ore + oim * oim + 1e-9f);
+    };
+    int prev = 0;
     for(int x = 0; x <= w; x++)
     {
-        float xq  = float(x) / w;
-        float wn  = powf(10.f, (xq - p.cutoff) * 2.2f);
-        float num = ftype == 1 ? wn * wn : (ftype == 2 ? wn / q : 1.f);
-        float mag = num / sqrtf((1.f - wn * wn) * (1.f - wn * wn) + (wn / q) * (wn / q));
-        float db  = fmaxf(-36.f, fminf(12.f, 20.f * log10f(mag)));
-        int   y   = top + int((12.f - db) / 48.f * float(bot - top));
+        float xq = float(x) / w;
+        float db, db_lo;
+        if(comb)
+        {
+            // The teeth get denser than a pixel up high: take the peak and
+            // the dip within each column so it reads as a filled band
+            db = -99.f, db_lo = 99.f;
+            for(int k = 0; k < 6; k++)
+            {
+                const float v = comb_db(xq + (float(k) / 6.f - 0.5f) / w);
+                db            = fmaxf(db, v);
+                db_lo         = fminf(db_lo, v);
+            }
+        }
+        else
+        {
+            float wn  = powf(10.f, (xq - p.cutoff) * 2.2f);
+            float num = ftype == 1 ? wn * wn : (ftype == 2 ? wn / q : 1.f);
+            float mag = num / sqrtf((1.f - wn * wn) * (1.f - wn * wn) + (wn / q) * (wn / q));
+            db        = 20.f * log10f(mag);
+            db_lo     = db;
+        }
+        db    = fmaxf(-36.f, fminf(12.f, db));
+        db_lo = fmaxf(-36.f, fminf(12.f, db_lo));
+        int y    = top + int((12.f - db) / 48.f * float(bot - top));
+        int y_lo = top + int((12.f - db_lo) / 48.f * float(bot - top));
         if(heat > 0.05f) // heat shimmer: a little jitter that moves each frame
         {
             uint32_t h = (uint32_t(x) * 2654435761u) ^ (frame * 40503u);
             h ^= h >> 13;
             y += int(lroundf((float(h & 255) / 255.f - 0.5f) * 1.4f * heat));
         }
-        y = y < top ? top : (y > bot ? bot : y);
+        y    = y < top ? top : (y > bot ? bot : y);
+        y_lo = y_lo < y ? y : (y_lo > bot ? bot : y_lo);
         if(y < bot) // area under the curve: mid grey near the line, dark below
         {
             g.VLine(x0 + x, y + 1, y + 3 < bot ? y + 3 : bot, M);
             if(y + 4 < bot)
                 g.VLine(x0 + x, y + 4, bot, D);
         }
+        if(y_lo > y + 1) // comb: the dips between teeth in this column
+            g.VLine(x0 + x, y, y_lo, L);
         if(x > 0)
         {
             g.Line(x0 + x - 1, prev, x0 + x, y, W);

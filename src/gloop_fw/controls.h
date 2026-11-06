@@ -247,7 +247,8 @@ class Controls
 
             // Filter type changed: if the filter was open, keep it open for
             // the new type (an HP at LP's open position would be silent)
-            if(d.field == &Params::filter_type && v != old
+            // (a comb has no open position, so its pitch is left alone)
+            if(d.field == &Params::filter_type && v != old && int(old + 0.5f) != 3
                && fabsf(p.cutoff - FilterOpenCutoff(old)) < 0.02f)
                 p.cutoff = FilterOpenCutoff(v);
 

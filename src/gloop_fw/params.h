@@ -37,7 +37,7 @@ struct Params
     // FILTER
     float cutoff       = 1.f;  // 0..1 → 40 Hz..18 kHz (exponential)
     float reso         = 0.f;  // 0..1
-    float filter_type  = 0.f;  // 0 = LP, 1 = HP, 2 = BP
+    float filter_type  = 0.f;  // 0 = LP, 1 = HP, 2 = BP, 3 = COMB
     float filter_drive = 0.f;  // 0..1 drive into the filter (0 = clean)
     // CHORUS
     float chorus_rate  = 0.3f; // 0..1 → 0.05..10 Hz
@@ -97,18 +97,19 @@ enum class Format
     Hertz,     // 0..1 cutoff → "2.4K"
     Eighths,   // 8th-note count → "6/8", "16/8"
     LfoHz,     // 0..1 → 0.05..10 Hz → "0.8HZ"
-    FilterType, // 0/1/2 → "LP" / "HP" / "BP"
+    FilterType, // 0..3 → "LP" / "HP" / "BP" / "COMB"
     Note,       // MIDI note → "C3", "F#4"
     ToneHz,     // 0..1 → 1..18 kHz → "10K"
 };
 
 // Describes one encoder's job on one page
 // Where CUTOFF leaves the sound untouched for each filter type
-// (LP fully up, HP fully down, BP in the middle)
+// (LP fully up, HP fully down, BP in the middle). A comb is never "open":
+// its reset is the middle too (~850 Hz).
 inline float FilterOpenCutoff(float type)
 {
     const int t = int(type + 0.5f);
-    return t == 1 ? 0.f : (t == 2 ? 0.5f : 1.f);
+    return t == 0 ? 1.f : (t == 1 ? 0.f : 0.5f);
 }
 
 struct ParamDesc
