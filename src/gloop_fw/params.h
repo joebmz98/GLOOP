@@ -20,7 +20,7 @@ struct Params
                            //       after start (SHIFT + LENGTH)
     bool  synced  = true;  // true: length8 (BPM grid); false: free length
     float pitch   = 0.f;   // -24..+24 semitones (varispeed, like tape)
-    float xfade   = 0.02f; // 0..0.25 s crossfade across the loop seam
+    float xfade   = 0.02f; // 0..1 s crossfade across the loop seam (max half the loop)
     float bpm     = 120.f; // 40..240, shared by both tracks (SHIFT + START)
 
     // GRAINS page

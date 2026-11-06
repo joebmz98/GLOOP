@@ -28,6 +28,9 @@ static constexpr uint16_t L      = Gfx::Rgb(176, 176, 180); // light grey
 static constexpr uint16_t M      = Gfx::Rgb(108, 108, 114); // mid grey
 static constexpr uint16_t D      = Gfx::Rgb(50, 50, 56);    // dark grey
 static constexpr uint16_t B      = Gfx::kBlack;
+// The ONLY colour: recording / record arm
+static constexpr uint16_t R      = Gfx::Rgb(235, 40, 40);  // red
+static constexpr uint16_t RD     = Gfx::Rgb(110, 20, 20);  // dark red (blink off)
 static constexpr float    kTwoPi = 6.2831853f;
 
 // Logical layout
@@ -38,6 +41,10 @@ static constexpr int kReadLine  = 86;
 static constexpr int kReadTop   = 88;
 static constexpr int kCellW     = 66;
 static constexpr int kFootLine  = 110;
+// The panel has rounded corners: keep the header and footer rows this far in
+// from the left and right edges so nothing is cut off
+static constexpr int kCornerL    = 7;
+static constexpr int kCornerR    = kSW - 8; // last usable column on the right
 
 static const char* const kPageNames[kNumPages] = {"LOOP", "GRAINS", "FX"};
 
@@ -107,20 +114,11 @@ void Ui::Draw(const UiState& s)
 void Ui::DrawHeader(const UiState& s)
 {
     DrawTrackChip(s);
-    g_.Text(16, 2, kPageNames[int(s.page)], W, Gfx::kBig);
+    g_.Text(kCornerL + 16, 2, kPageNames[int(s.page)], W, Gfx::kBig);
 
-    // FX: four dots for FILTER / CHORUS / RESONATOR / REVERB
-    if(s.page == Page::Fx)
-        for(int i = 0; i < kNumFxPages; i++)
-        {
-            if(i == s.fx_page)
-                g_.FillRect(31 + i * 5, 4, 3, 3, W);
-            else
-                g_.Rect(31 + i * 5, 4, 3, 3, M);
-        }
     // Holding FX: the encoders are the FX mixer, whatever the page
     if(s.enc.fx_held)
-        g_.Chip(52, 1, "FX MIX", Gfx::kSmall);
+        g_.Chip(56, 1, "FX MIX", Gfx::kSmall);
 
     // Tempo next to the page name on the LOOP page, e.g. "120 BPM"
     if(s.page == Page::Loop && !s.enc.fx_held)
@@ -131,49 +129,55 @@ void Ui::DrawHeader(const UiState& s)
             bpm[k++] = char('0' + b / 100);
         bpm[k++] = char('0' + (b / 10) % 10);
         bpm[k++] = char('0' + b % 10);
-        const char* tail = " BPM";
+        const char* tail = s.midi_sync ? " MIDI" : " BPM"; // MIDI clock in
         for(; *tail; tail++)
             bpm[k++] = *tail;
         bpm[k] = 0;
-        g_.Text(42, 4, bpm, s.shift ? W : M, Gfx::kSmall);
+        g_.Text(kCornerL + 44, 4, bpm, s.midi_sync ? L : (s.shift ? W : M), Gfx::kSmall);
     }
 
     const TapeLoop& t  = *s.tape;
     const bool      on = (frame_ / 8) % 2 == 0;
+    // Record states are the only thing on the screen in colour (red)
+    const int rx = kCornerR + 1; // right edge of the status text
     if(t.IsArmed())
     {
         // Armed: "ARM" with a hollow record dot, blinking, waiting for input
-        const int x = kSW - 27;
-        g_.Circle(x + 4, 5, 2, on ? W : M);
-        g_.TextRight(kSW - 2, 2, "ARM", on ? W : M, Gfx::kBig);
+        g_.Circle(rx - 23, 5, 2, on ? R : RD);
+        g_.TextRight(rx, 2, "ARM", on ? R : RD, Gfx::kBig);
+    }
+    else if(t.IsCountReady())
+    {
+        // Count-in armed: steady "ARM", PLAY starts the count
+        g_.Circle(rx - 23, 5, 2, R);
+        g_.TextRight(rx, 2, "ARM", R, Gfx::kBig);
+    }
+    else if(t.IsCounting())
+    {
+        // Counting in: the beats left, in red, with a filled dot
+        char n[2] = {char('0' + (s.count_beats > 9 ? 9 : s.count_beats)), 0};
+        g_.FillCircle(rx - 11, 5, 2, on ? R : RD);
+        g_.TextRight(rx, 2, n, R, Gfx::kBig);
     }
     else if(t.IsRecording())
     {
-        // Blinking inverted REC chip with a dot
-        const int x = kSW - 27;
-        if(on)
-        {
-            g_.FillRect(x, 0, 27, 11, W);
-            g_.FillCircle(x + 4, 5, 2, B);
-            g_.TextRight(kSW - 2, 2, "REC", B, Gfx::kBig);
-        }
-        else
-        {
-            g_.Circle(x + 4, 5, 2, W);
-            g_.TextRight(kSW - 2, 2, "REC", W, Gfx::kBig);
-        }
+        // Blinking red REC chip with a dot
+        const int x = rx - 26;
+        g_.FillRect(x, 0, 27, 11, on ? R : RD);
+        g_.FillCircle(x + 4, 5, 2, W);
+        g_.TextRight(rx, 2, "REC", W, Gfx::kBig);
     }
     else if(t.IsPlaying())
     {
-        g_.TextRight(kSW - 1, 2, "PLAY", W, Gfx::kBig);
-        int ax = kSW - 31 + (on ? 1 : 0); // nudging play triangle
+        g_.TextRight(rx, 2, "PLAY", W, Gfx::kBig);
+        int ax = rx - 30 + (on ? 1 : 0); // nudging play triangle
         for(int i = 0; i < 4; i++)
             g_.VLine(ax + i, 3 + i, 9 - i, W);
     }
     else
     {
-        g_.TextRight(kSW - 1, 2, "STOP", W, Gfx::kBig);
-        g_.FillRect(kSW - 32, 3, 5, 5, W);
+        g_.TextRight(rx, 2, "STOP", W, Gfx::kBig);
+        g_.FillRect(rx - 31, 3, 5, 5, W);
     }
 
     if(s.shift)
@@ -183,11 +187,11 @@ void Ui::DrawHeader(const UiState& s)
         // Metronome: 4 beat dots, the current beat lit (beat 1 drawn larger).
         // Hollow and still when a track is armed/recording but the click is
         // switched off (SHIFT + PLAY).
-        const bool waiting = t.IsArmed() || t.IsRecording() || s.metro_active;
+        const bool waiting = t.IsArmed() || t.IsRecording() || t.IsCounting() || s.metro_active;
         if(waiting)
             for(int b = 0; b < 4; b++)
             {
-                const int  x   = 74 + b * 5;
+                const int  x   = 86 + b * 5;
                 const int  sz  = b == 0 ? 4 : 3;
                 const int  y   = b == 0 ? 3 : 4;
                 const bool cur = s.metro_active && b == s.metro_beat;
@@ -328,16 +332,34 @@ void Ui::DrawLoop(const UiState& s)
     const int top = 70, bot = 84, mid = (top + bot) / 2, x0 = 4, w = 132;
     if(t.IsRecording())
     {
-        g_.Rect(x0, mid - 3, w, 7, M);
+        // Recording: the track strip fills in red (progress through the 30 s)
+        g_.Rect(x0, mid - 3, w, 7, RD);
         g_.FillRect(x0 + 2, mid - 1, w - 4, 3, D);
-        g_.FillRect(x0 + 2, mid - 1, int((w - 4) * phase) + 1, 3, W);
+        g_.FillRect(x0 + 2, mid - 1, int((w - 4) * phase) + 1, 3, R);
+        if(t.IsStopPending()) // REC pressed: recording on to the bar line
+            g_.TextCentered(68, top - 1, "FINISHING THE BAR", R, Gfx::kSmall);
+        else if(t.GridLocked())
+            g_.TextCentered(68, top - 1, "IN TIME", R, Gfx::kSmall);
+    }
+    else if(t.IsCountReady())
+    {
+        if((frame_ / 8) % 2 == 0)
+            g_.TextCentered(68, mid - 2, "PLAY: 4-BEAT COUNT-IN", R, Gfx::kSmall);
+    }
+    else if(t.IsCounting())
+    {
+        // The count, big and red, in the strip
+        char n[2] = {char('0' + (s.count_beats > 9 ? 9 : s.count_beats)), 0};
+        g_.TextScaled(68 - 5, top - 1, n, R, Gfx::kBig, 2);
     }
     else if(t.IsArmed())
     {
         // Waiting for input: live input meter on a -60..0 dB scale, with the
-        // trigger threshold marked. The bar turns white once it would trigger.
+        // trigger threshold marked. It turns red once it would trigger.
+        // "IN TIME": another loop is playing, so the take locks to its grid.
         if((frame_ / 8) % 2 == 0)
-            g_.TextCentered(68, top, "WAITING FOR INPUT", L, Gfx::kSmall);
+            g_.TextCentered(68, top, s.in_time ? "WAITING FOR INPUT - IN TIME" : "WAITING FOR INPUT",
+                            R, Gfx::kSmall);
         auto db_pos = [](float lin) {
             float db = 20.f * log10f(fmaxf(lin, 1e-4f)); // -80..0
             float p  = (db + 60.f) / 60.f;
@@ -348,7 +370,7 @@ void Ui::DrawLoop(const UiState& s)
         g_.FillRect(x0 + 1, my + 1, w - 2, mh - 2, D);
         const bool  over = s.input_peak >= TapeLoop::kArmThreshold;
         const int   fill = int((w - 2) * db_pos(s.input_peak));
-        g_.FillRect(x0 + 1, my + 1, fill, mh - 2, over ? W : L);
+        g_.FillRect(x0 + 1, my + 1, fill, mh - 2, over ? R : L);
         const int tx = x0 + 1 + int((w - 2) * db_pos(TapeLoop::kArmThreshold));
         g_.VLine(tx, my - 2, my + mh + 1, W); // threshold marker
     }
@@ -1391,22 +1413,46 @@ void Ui::DrawReadouts(const UiState& s)
 void Ui::DrawFooter(const UiState& s)
 {
     g_.HLine(0, kSW - 1, kFootLine, D);
-    const int gap   = 12;
-    int       total = 0;
-    for(auto n : kPageNames)
-        total += Gfx::TextWidth(n, Gfx::kSmall) + gap;
-    total -= gap;
-    int x = kSW / 2 - total / 2;
-    if(x < 38)
-        x = 38; // room for the other tracks' status on the left
-    for(int i = 0; i < kNumPages && !s.shift; i++) // SHIFT: FPS here instead
+
+    // Bottom right: the pages within the current mode, the current one lit
+    //   LOOP   : MAIN (and a reminder that SHIFT has BPM / FREE length)
+    //   GRAINS : MAIN / ALT (GRAINS again)
+    //   FX     : FILT / CHOR / RESO / VERB (FX again / SHIFT + FX)
+    if(!s.shift)
     {
-        const char* n = kPageNames[i];
-        if(i == int(s.page))
-            g_.Chip(x - 2, kFootLine + 1, n, Gfx::kSmall);
-        else
-            g_.Text(x, kFootLine + 3, n, M, Gfx::kSmall);
-        x += Gfx::TextWidth(n, Gfx::kSmall) + gap;
+        static const char* const kLoopTabs[1]   = {"MAIN"};
+        static const char* const kGrainsTabs[2] = {"MAIN", "ALT"};
+        static const char* const kFxTabs[4]     = {"FILT", "CHOR", "RESO", "VERB"};
+        const char* const*       tabs = kLoopTabs;
+        int                      n = 1, cur = 0;
+        if(s.page == Page::Grains)
+        {
+            tabs = kGrainsTabs;
+            n    = 2;
+            cur  = s.grain_size_mode ? 1 : 0;
+        }
+        else if(s.page == Page::Fx)
+        {
+            tabs = kFxTabs;
+            n    = 4;
+            cur  = s.fx_page & 3;
+        }
+        const int gap   = 6;
+        int       total = 0;
+        for(int i = 0; i < n; i++)
+            total += Gfx::TextWidth(tabs[i], Gfx::kSmall) + gap;
+        total -= gap;
+        int x = kCornerR - 1 - total;
+        if(s.page == Page::Loop)
+            g_.Text(x - 46, kFootLine + 3, "SHIFT:BPM", D, Gfx::kSmall);
+        for(int i = 0; i < n; i++)
+        {
+            if(i == cur)
+                g_.Chip(x - 2, kFootLine + 1, tabs[i], Gfx::kSmall);
+            else
+                g_.Text(x, kFootLine + 3, tabs[i], M, Gfx::kSmall);
+            x += Gfx::TextWidth(tabs[i], Gfx::kSmall) + gap;
+        }
     }
 
     // Hold SHIFT to see the audio CPU load: peak (last second) on the left,
@@ -1432,7 +1478,7 @@ void Ui::DrawFooter(const UiState& s)
             buf[n]   = 0;
             return buf;
         };
-        g_.Text(2, kFootLine + 3, pct("PK", s.cpu_peak), L, Gfx::kSmall);
+        g_.Text(kCornerL, kFootLine + 3, pct("PK", s.cpu_peak), L, Gfx::kSmall);
         char fps[8] = "FPS ";
         const int f = s.fps > 99 ? 99 : s.fps;
         fps[4]      = char('0' + f / 10);
@@ -1441,9 +1487,9 @@ void Ui::DrawFooter(const UiState& s)
         g_.TextCentered(kSW / 2, kFootLine + 3, fps, M, Gfx::kSmall);
         const char* avg = pct("CPU", s.cpu_avg);
         if(s.throttled)
-            g_.Chip(kSW - Gfx::TextWidth(avg, Gfx::kSmall) - 4, kFootLine + 1, avg, Gfx::kSmall);
+            g_.Chip(kCornerR - Gfx::TextWidth(avg, Gfx::kSmall) - 2, kFootLine + 1, avg, Gfx::kSmall);
         else
-            g_.TextRight(kSW - 2, kFootLine + 3, avg, L, Gfx::kSmall);
+            g_.TextRight(kCornerR, kFootLine + 3, avg, L, Gfx::kSmall);
     }
 }
 
@@ -1460,8 +1506,9 @@ void Ui::DrawFooter(const UiState& s)
 void Ui::DrawTrackChip(const UiState& s)
 {
     // Muted (SHIFT + track button): dark chip with dim text
-    g_.FillRect(0, 0, 13, 11, s.muted ? D : W);
-    g_.Text(1, 2, TrackName(s.track), s.muted ? L : B, Gfx::kBig);
+    // Inset from the corner, one row down: the panel's corners are rounded
+    g_.FillRect(kCornerL, 1, 13, 10, s.muted ? D : W);
+    g_.Text(kCornerL + 1, 2, TrackName(s.track), s.muted ? L : B, Gfx::kBig);
 }
 
 // Footer, bottom left: what the OTHER tracks are doing, so you can see every
@@ -1475,15 +1522,15 @@ void Ui::DrawOtherTrack(const UiState& s)
         if(!s.others[k])
             continue;
         const TapeLoop& t = *s.others[k];
-        const int       x = 2 + k * 16, y = kFootLine + 3;
+        const int       x = kCornerL + k * 16, y = kFootLine + 3;
         g_.Text(x, y, TrackName(s.other_id[k]), s.other_muted[k] ? D : M, Gfx::kSmall);
         if(s.other_muted[k])
             g_.HLine(x - 1, x + 7, y + 2, L); // struck through: muted
         const int gx = x + 9, gy = y + 2;
         if(t.IsRecording())
-            g_.FillCircle(gx + 2, gy, 2, on ? W : M);
-        else if(t.IsArmed())
-            g_.Circle(gx + 2, gy, 2, on ? W : M);
+            g_.FillCircle(gx + 2, gy, 2, on ? R : RD);
+        else if(t.IsArmed() || t.IsCountReady() || t.IsCounting())
+            g_.Circle(gx + 2, gy, 2, on ? R : RD);
         else if(t.IsPlaying())
             for(int i = 0; i < 3; i++)
                 g_.VLine(gx + i, gy - 2 + i, gy + 2 - i, L);
@@ -1730,7 +1777,7 @@ void Ui::DrawBrowser(const UiState& s)
 
     // Header: [T1]  SAMPLES  or  [T1]  FACTORY   3/12
     DrawTrackChip(s);
-    g_.Text(16, 2, b.level() == Browser::kRoot ? "SAMPLES" : lib.FolderName(b.folder()), W, Gfx::kBig);
+    g_.Text(kCornerL + 16, 2, b.level() == Browser::kRoot ? "SAMPLES" : lib.FolderName(b.folder()), W, Gfx::kBig);
     if(b.level() == Browser::kFolder && lib.Count(b.folder()) > 0)
     {
         char pos[8];
@@ -1748,7 +1795,7 @@ void Ui::DrawBrowser(const UiState& s)
             pos[k++] = char('0' + (n / 10) % 10);
         pos[k++] = char('0' + n % 10);
         pos[k]   = 0;
-        g_.TextRight(kSW - 2, 3, pos, L, Gfx::kSmall);
+        g_.TextRight(kCornerR, 3, pos, L, Gfx::kSmall);
     }
     g_.HLine(0, kSW - 1, 11, D);
 

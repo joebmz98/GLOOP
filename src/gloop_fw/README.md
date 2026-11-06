@@ -18,9 +18,9 @@ Daisy Seed firmware, built with the Arduino IDE. Three tracks, each: tape looper
 | Board part number | Daisy Seed |
 | Upload method | STM32CubeProgrammer (DFU) |
 | USB support | None (CDC adds ~12 KB of flash) |
-| Optimize | **Smallest (-Os default)** (77% of flash) |
+| Optimize | **Smallest (-Os default)** (86% of flash) |
 
-GLOOP's own audio code (grains, tape, filter drive, chorus, resonator, reverb bus) switches itself to `-O2` with `#pragma GCC optimize`, so "Smallest" keeps it fast. "Faster (-O2) with LTO" also speeds up DaisyDuino's own reverb and filter, but it is now at **98%** of the 128 KB flash, with no room for the SD card code; use it only to compare CPU. "Faster/Fastest" **without** LTO overflows the flash.
+GLOOP's own audio code (grains, tape, filter drive, chorus, resonator, reverb bus) switches itself to `-O2` with `#pragma GCC optimize`, so "Smallest" keeps it fast. "Faster (-O2) with LTO" **no longer fits** the 128 KB flash (MIDI and three tracks pushed it over); "Faster/Fastest" without LTO doesn't either. Next step when flash runs out: run the program from the Seed's 8 MB QSPI flash.
 
 **Upload:** hold BOOT, tap RESET, release BOOT, then Upload.
 
@@ -39,6 +39,7 @@ Open `gloop_fw/gloop_fw.ino` (the Arduino IDE needs the folder and the `.ino` to
 | Encoder 3 A / B / push | D21 / D22 / D23 (pins 28–30) |
 | Encoder 4 A / B / push | D24 / D25 / D26 (pins 31–33) |
 | T1 / T2 / T3 | D0 (pin 1) / D1 (pin 2) / **D28 (pin 35)** |
+| MIDI in (optocoupler output) | **D14 (pin 15)**, USART1 RX, pulled up to **3V3** (not 5 V) |
 | REC / PLAY | D2 (pin 3) / D3 (pin 4) |
 | LOOP / GRAINS / FX | D4 / D5 / D6 (pins 5–7) |
 | SHIFT | D12 (pin 13) |
@@ -53,7 +54,7 @@ D1–D6 are also the Seed's SD card pins: when SD loading is added, the buttons 
 
 | Page | Enc 1 | Enc 2 | Enc 3 | Enc 4 |
 |---|---|---|---|---|
-| LOOP | Start · SHIFT: **BPM** | Length (8th notes) · SHIFT: **free length** | Pitch (±24 st) | Crossfade |
+| LOOP | Start · SHIFT: **BPM** | Length (8th notes) · SHIFT: **free length** | Pitch (±24 st) | Crossfade (0–1 s) |
 | GRAINS | Grains (0 = loop only, 1–12 = grains on top of the loop) · alt: **Size** | Spray | Spread · alt: **Grain pitch** (±24 st) | Mix (loop ↔ grains, default 50%) · alt: **Envelope** |
 | FX ▪ FILTER | Cutoff | Resonance | Type (LP / HP / BP) | Drive |
 | FX ▪ CHORUS | Rate | Depth | Width | Mix |
@@ -61,22 +62,28 @@ D1–D6 are also the Seed's SD card pins: when SD loading is added, the buttons 
 | FX ▪ REVERB | Size | Tone | Pre-delay | Mix |
 | **Hold FX** (any page) | Filter cutoff | Chorus mix | Resonator mix | Reverb mix |
 
-Everything acts on the **selected track** (T1, T2 or T3, shown in the header chip). The footer's bottom-left shows what the other two tracks are doing (play triangle, stop square, record dot); a muted one is struck through.
+Everything acts on the **selected track** (T1, T2 or T3, shown in the header chip). The footer's bottom-left shows what the other two tracks are doing (play triangle, stop square, red record dot); a muted one is struck through. The footer's bottom-right shows the pages of the current mode with the current one lit: LOOP `MAIN`, GRAINS `MAIN / ALT`, FX `FILT / CHOR / RESO / VERB`.
+
+The panel has rounded corners, so the header and footer keep 7 px (logical) clear of the left and right edges (`kCornerL` / `kCornerR` in `ui.cpp`).
 
 - **T1 / T2 / T3:** first press selects that track; pressed again on LOOP opens the sample browser for it (turn any encoder to move, push to open / load).
 - **REC arms** the track: it waits for input and starts recording when the input crosses about -34 dBFS, keeping the 10 ms before the trigger so the first attack isn't lost. The screen shows ARM and a live input meter with the trigger level marked. REC again cancels.
+- **In time with a playing loop:** if another track is playing when the take starts (REC arm, SHIFT + REC or a count-in), the take locks to that loop's 8th-note grid (**IN TIME** on screen). It still starts the moment you play, but the new loop's start is placed on the nearest 8th of the playing loop (with silence in front if you came in a little late), and it joins in exactly in phase, so every note plays back where you played it. Pressing REC (or PLAY) to finish rounds the take to the **nearest whole bar** (or the playing loop's length if that isn't whole bars): if that bar line has already passed it stops and trims there, otherwise it keeps recording and stops exactly on the bar (**FINISHING THE BAR**).
+- **Count-in:** hold **REC** and press **PLAY** → steady ARM ("PLAY: 4-BEAT COUNT-IN"). Press **PLAY** again → the metronome counts **4 beats** (the number shows big, always clicks even if the metronome is off) and recording starts **on the beat**. With a loop playing, the count ends on that loop's next bar line at least 4 beats away, so you always hear a full 1-2-3-4. REC or PLAY during the count cancels it.
 - **SHIFT + REC** records immediately, without waiting.
+- **Red is the only colour on the screen:** the ARM / REC status, the record dots and the track strip while recording.
 - **Metronome:** while a track is armed or recording it clicks every beat at the BPM (4/4, higher click on beat 1), with four beat dots in the header. If another track is playing, beat 1 is that loop's start, so a new take stays in time with it; otherwise it starts when you arm and restarts on beat 1 when recording begins. The click goes to the output only, never into a recording. **SHIFT + PLAY** turns it on/off (dots show hollow when off).
 - While recording, REC or PLAY closes the loop and plays it. A take stops by itself at **30 s** (`kMaxLoopSeconds`).
 - **PLAY is global:** it stops every track if any is playing, otherwise starts them all from their loop start points, in sync. If the selected track is recording, PLAY finishes the take instead.
 - **When a take finishes** (REC, PLAY or the 30 s limit): if another track is already playing, the new loop **joins in** straight away; if nothing was playing, every track with a loop starts together from its loop start.
 - **BPM:** SHIFT + START sets the tempo (40–240, shared by all tracks), shown next to LOOP in the header.
+- **MIDI clock in** (D14): while a MIDI clock is coming in, the BPM follows it (whole BPM; a new tempo is taken once it has held for a beat, so loop lengths don't re-cut through a tempo glide). The header shows e.g. `120 MIDI` instead of `120 BPM`. If the clock stops for half a second, GLOOP keeps that tempo and SHIFT + START works again.
 - **LENGTH** is counted in 8th notes at that BPM (shown as e.g. `6/8`, `16/8`), so loops stay in time when the BPM changes. A new take is fitted to the most whole 8ths it holds.
 - **SHIFT + LENGTH** frees the length from the grid (shown in seconds). Turning LENGTH again without SHIFT snaps it back onto the nearest 8th.
 - **GRAINS 0** is just the loop; **1–12** add that many grains alongside the loop. The cloud's level is matched to the loop automatically, so changing GRAINS / SPRAY / ENV / SIZE doesn't jump the volume.
 - **MIX** (GRAINS encoder 4) balances the loop against the grains: 0% = loop only, 100% = grains only, **50% (default)** = both at -3 dB (an equal-power blend), which keeps the total about as loud as the loop on its own.
 - **Press GRAINS again** while on the GRAINS page for the **alt layer**: encoder 1 = grain **SIZE**, encoder 3 = grain **PITCH** (±24 semitones, the grains only; the loop keeps its own PITCH), encoder 4 = grain **ENVELOPE** (window shape). Their labels show inverted; press GRAINS again to go back.
-- **FX pages:** one effect per page. **FX** goes to the FX pages (at the one you used last); pressed again it steps **FILTER → CHORUS → RESONATOR → REVERB**, and **SHIFT + FX** steps back. Four dots next to FX in the header show which. Per track the order is **Filter → Chorus → Resonator → Reverb**, and **MIX is always encoder 4**.
+- **FX pages:** one effect per page. **FX** goes to the FX pages (at the one you used last); pressed again it steps **FILTER → CHORUS → RESONATOR → REVERB**, and **SHIFT + FX** steps back. The footer shows which. Per track the order is **Filter → Chorus → Resonator → Reverb**, and **MIX is always encoder 4**.
 - **Hold FX and turn** = the **FX mixer**, from any page, without leaving it: encoder 1 = filter cutoff, 2 = chorus mix, 3 = resonator mix, 4 = reverb mix. The header shows **FX MIX** and the readouts switch to the mixer while FX is held. (FX acts when you *release* it, so holding it to use the mixer doesn't change page.)
 - **Hold an encoder in and turn it** for its second parameter, where it has one: on RESONATOR, encoder 2 = **BRIGHT** (also shown top right of the picture). Elsewhere hold + turn is the same as turning.
 - **Value popup:** while you turn an encoder, its name and value show large in the middle of the screen for about a second. Useful for the mixer and hold + turn, whose values aren't on the readouts.
@@ -113,7 +120,9 @@ Hold SHIFT to read the audio CPU load: **PK** (worst block in the last second) a
 | File | What it does |
 |---|---|
 | `gloop_fw.ino` | The two tracks, audio callback and mix, setup/loop, sample loading |
-| `metronome.h` | Click track while armed/recording, locked to a playing loop or to the take start |
+| `metronome.h` | Click track while armed/recording/counting in, locked to a playing loop or to the take start |
+| `record_sync.h` | Grid-lock and count-in timing maths (recording in time with a playing loop) |
+| `midi_clock.h` | MIDI clock in (D14) → BPM |
 | `tape_loop.h` | 16-bit interleaved record buffer, record-arm with pre-roll, loop region, play head, seam crossfade |
 | `grains.h` | Grain pool (12 voices), block-based renderer, spray/spread/envelope, CPU throttle |
 | `envelopes.h` | 10 grain window lookup tables + level compensation |

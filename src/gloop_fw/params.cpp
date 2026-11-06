@@ -14,7 +14,7 @@ static const ParamDesc kLoopParams[4] = {
     {"START", &Params::start, 0.f, 1.f, 0.005f, 0.f, false, false, Format::Seconds},
     {"LENGTH", &Params::length8, 1.f, 256.f, 1.f, 8.f, true, false, Format::Eighths},
     {"PITCH", &Params::pitch, -24.f, 24.f, 1.f, 0.f, false, false, Format::Semitones},
-    {"XFADE", &Params::xfade, 0.f, 0.25f, 0.005f, 0.02f, false, false, Format::Millis},
+    {"XFADE", &Params::xfade, 0.f, 1.f, 0.01f, 0.02f, false, false, Format::Millis},
 };
 
 static const ParamDesc kGrainsParams[4] = {

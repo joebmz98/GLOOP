@@ -59,12 +59,98 @@ class TapeLoop
         pre_pos_   = 0;
         armed_     = true;
     }
-    void Disarm() { armed_ = false; }
+    // Cancel any kind of arm (input wait, count-in ready or counting)
+    void Disarm()
+    {
+        armed_       = false;
+        count_ready_ = false;
+        counting_    = false;
+    }
+
+    // Count-in arm (hold REC + PLAY): no input trigger; PLAY then starts a
+    // 4-beat count-in (StartCountIn) and the audio side starts the take on
+    // the beat (see gloop_fw.ino).
+    void ArmCountIn()
+    {
+        if(recording_)
+            return;
+        armed_       = false;
+        count_ready_ = true;
+    }
+    void StartCountIn()
+    {
+        count_ready_ = false;
+        counting_    = true;
+    }
+    void EndCountIn() { counting_ = false; }
+    bool IsCountReady() const { return count_ready_; }
+    bool IsCounting() const { return counting_; }
+
+    // Grid lock (recording while another loop plays): put n frames of silence
+    // in front of what's been recorded so far, so the take starts exactly on
+    // the playing loop's grid. Only ever called right at the trigger, when
+    // the take is just the 10 ms pre-roll, so it's quick.
+    void InsertSilence(uint32_t n)
+    {
+        if(n == 0 || rec_len_ + n >= cap_)
+            return;
+        for(int32_t i = int32_t(rec_len_) - 1; i >= 0; i--)
+        {
+            buf_[2 * (i + n)]     = buf_[2 * i];
+            buf_[2 * (i + n) + 1] = buf_[2 * i + 1];
+        }
+        for(uint32_t i = 0; i < n; i++)
+            buf_[2 * i] = buf_[2 * i + 1] = 0;
+        rec_len_ = rec_len_ + n;
+    }
+
+    // Grid lock (see record_sync.h): the take frame on the playing loop's
+    // grid, and the length unit the take must be a whole number of (a bar,
+    // or the playing loop's length if that isn't whole bars).
+    void SetGridLock(double idx, double unit)
+    {
+        grid_lock_ = unit > 0.0;
+        grid_idx_  = idx;
+        unit_      = unit;
+    }
+    bool   GridLocked() const { return grid_lock_; }
+    double GridIndex() const { return grid_idx_; }
+    double GridUnit() const { return unit_; }
+
+    // Finish a take. Free takes stop now. A grid-locked take is rounded to
+    // the nearest whole unit: if that boundary has passed it stops now (and
+    // is trimmed to it later), otherwise it keeps recording and stops by
+    // itself exactly on the boundary.
+    void RequestStop()
+    {
+        if(!recording_)
+            return;
+        if(!grid_lock_)
+        {
+            StopRecording();
+            return;
+        }
+        const double el     = double(rec_len_) - grid_idx_;
+        const double k      = fmax(1.0, floor(el / unit_ + 0.5));
+        const double target = grid_idx_ + k * unit_;
+        if(target <= double(rec_len_))
+            StopRecording();
+        else
+            stop_at_ = uint32_t(ceil(target));
+    }
+    bool IsStopPending() const { return stop_at_ != 0; } // finishing the bar
+
+    // Play head within the loop region (grid lock: join in phase)
+    void SetHead(double h) { head_ = h < 0.0 ? 0.0 : fmod(h, double(len_)); }
 
     // Recording always starts a fresh take at the beginning of the buffer.
     void StartRecording()
     {
-        armed_     = false;
+        grid_lock_   = false;
+        stop_at_     = 0;
+        armed_       = false;
+        count_ready_ = false;
+        counting_    = false;
         playing_   = false;
         rec_len_   = 0;
         head_      = 0.0;
@@ -75,6 +161,7 @@ class TapeLoop
     void StopRecording()
     {
         recording_ = false;
+        stop_at_   = 0;
         if(rec_len_ < kMinLoop)
         {
             rec_len_ = 0; // too short, discard
@@ -125,8 +212,8 @@ class TapeLoop
             return;
         buf_[2 * rec_len_]     = ToInt16(l);
         buf_[2 * rec_len_ + 1] = ToInt16(r);
-        if(++rec_len_ >= cap_)
-            StopRecording(); // loop length limit reached
+        if(++rec_len_ >= cap_ || (stop_at_ != 0 && rec_len_ >= stop_at_))
+            StopRecording(); // length limit, or a grid-locked take's bar end
     }
 
     // ---- Region & speed (block rate) ----------------------------------------
@@ -258,6 +345,12 @@ class TapeLoop
     float             rate_    = 1.f;
     volatile bool     recording_     = false;
     volatile bool     armed_         = false;
+    volatile bool     count_ready_   = false; // REC + PLAY: waiting for PLAY
+    bool              grid_lock_     = false;
+    double            grid_idx_      = 0.0;
+    double            unit_          = 0.0;
+    volatile uint32_t stop_at_       = 0;     // grid-locked take: stop here
+    volatile bool     counting_      = false; // count-in running
     int16_t           pre_[2 * kPreroll];   // pre-roll ring (internal RAM)
     uint32_t          pre_pos_       = 0;
     uint32_t          pre_count_     = 0;

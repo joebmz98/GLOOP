@@ -43,6 +43,8 @@
 #include "fx.h"
 #include "grains.h"
 #include "metronome.h"
+#include "midi_clock.h"
+#include "record_sync.h"
 #include "params.h"
 #include "st7789.h"
 #include "tape_loop.h"
@@ -74,6 +76,8 @@ struct Track
     StereoChorus chorus;
     ModalResonator res;
     float        mute_gain = 1.f; // glides to 0 when muted (no click)
+
+    int32_t count_left = -1; // count-in: samples until the take starts
     const char* tape_name = nullptr; // sample loaded onto the tape (label)
     float       grain_l[kMaxBlock];  // this block's grain output
     float       grain_r[kMaxBlock];
@@ -111,6 +115,8 @@ static CpuMeter      cpu;
 static SampleLibrary library;
 static Browser       browser;
 static Metronome     metronome;
+static MidiClockIn   midi_clock;   // MIDI clock in on D14 → BPM
+static uint32_t      sample_clock = 0; // samples since start (MIDI time stamps)
 
 // Metronome state for the UI
 static volatile bool metro_active = false; // clicking right now
@@ -192,6 +198,13 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
     // ---- 1. Controls (1 kHz), acting on the selected track ----
     controls.Process(track_params, track_tapes, browser);
 
+    // ---- 1a. MIDI clock in: the BPM follows it (all tracks) ----
+    midi_clock.Poll(sample_clock);
+    sample_clock += uint32_t(size);
+    if(midi_clock.Active())
+        for(int t = 0; t < kNumTracks; t++)
+            tracks[t].params.bpm = midi_clock.Bpm();
+
     // ---- 1b. A take just finished (REC, PLAY or the 30 s limit) ----
     // The new loop is already playing from its start. If the other track is
     // playing it simply joins in; if nothing else was playing, every track
@@ -200,11 +213,32 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
     {
         if(!tracks[t].tape.ConsumeTakeDone())
             continue;
-        // Fit the new take to the BPM grid: as many whole 8th notes as the
-        // recording holds (from the START point)
-        Params&     np     = tracks[t].params;
-        const float avail  = float(tracks[t].tape.RecordedLength()) * (1.f - np.start);
-        np.length8         = fmaxf(1.f, floorf(avail / EighthSamples(np.bpm, sample_rate)));
+        Params&     np    = tracks[t].params;
+        TapeLoop&   tp    = tracks[t].tape;
+        const float e     = EighthSamples(np.bpm, sample_rate);
+        if(tp.GridLocked())
+        {
+            // Grid lock: the loop starts at the take frame that sat on the
+            // playing loop's 8th grid, holds as many whole 8ths as were
+            // recorded from there, and joins in at exactly the point the
+            // playing loop has reached, so every note plays back where it was
+            // played. (Anything played just before the grid point lands in
+            // the loop-end crossfade, like a pickup.)
+            const GridFit f = FitGridLocked(double(tp.RecordedLength()), tp.GridIndex(),
+                                            double(e), double(TapeLoop::kMinLoop), tp.GridUnit());
+            np.start   = f.start01;
+            np.synced  = true;
+            np.length8 = f.eighths;
+            tp.SetRegion(np.start, np.length, np.xfade, sample_rate, f.eighths * e);
+            tp.SetHead(f.head * double(tp.Rate()));
+        }
+        else
+        {
+            // Fit the new take to the BPM grid: as many whole 8th notes as
+            // the recording holds (from the START point)
+            const float avail = float(tp.RecordedLength()) * (1.f - np.start);
+            np.length8        = fmaxf(1.f, floorf(avail / e));
+        }
         bool others_playing = false;
         for(int o = 0; o < kNumTracks; o++)
             if(o != t)
@@ -331,8 +365,36 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
     bool          click_on              = false;
     int           follow                = -1;
     for(int t = 0; t < kNumTracks; t++)
+        if(follow < 0 && tracks[t].tape.IsPlaying() && !tracks[t].tape.IsRecording())
+            follow = t;
+    const float beat_len = 60.f / tracks[0].params.bpm * sample_rate; // quarter
+    bool        counting = false;
+    for(int t = 0; t < kNumTracks; t++)
     {
-        const TapeLoop& tp = tracks[t].tape;
+        TapeLoop& tp = tracks[t].tape;
+        // ---- Count-in: just started → work out when the take begins ----
+        if(tp.IsCounting() && tracks[t].count_left < 0)
+        {
+            if(follow >= 0 && follow != t)
+            {
+                // A loop is playing: start on its first bar line that's at
+                // least 4 beats away, so you always hear a full "1 2 3 4"
+                const TapeLoop& m    = tracks[follow].tape;
+                tracks[t].count_left = CountInSamples(true, m.Head() / double(m.Rate()), beat_len);
+            }
+            else
+            {
+                // Nothing playing: beat 1 is now, the take starts on the
+                // next bar's beat 1
+                free_pos             = 0.0;
+                tracks[t].count_left = CountInSamples(false, 0.0, beat_len);
+                metronome.Resync();
+            }
+        }
+        if(!tp.IsCounting())
+            tracks[t].count_left = -1;
+        counting |= tp.IsCounting();
+
         if(tp.IsArmed() && !was_armed[t]) // just armed: count from here
         {
             free_pos = 0.0;
@@ -340,11 +402,9 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
         }
         was_armed[t] = tp.IsArmed();
         click_on |= tp.IsArmed() || tp.IsRecording();
-        if(follow < 0 && tp.IsPlaying() && !tp.IsRecording())
-            follow = t;
     }
     click_on &= controls.metronome_on();
-    const float beat_len = 60.f / tracks[0].params.bpm * sample_rate; // quarter
+    click_on |= counting; // the count-in always clicks
 
     for(size_t i = 0; i < size; i++)
     {
@@ -362,11 +422,35 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
         for(int t = 0; t < kNumTracks; t++)
         {
             Track& tr = tracks[t];
+            if(tr.count_left >= 0 && --tr.count_left < 0) // count-in over
+                tr.tape.StartRecording();                  // on the beat
             tr.tape.Write(in_l, in_r); // no-op unless armed or recording
             if(tr.tape.IsRecording() && !was_rec[t]) // take started this sample
             {
-                free_pos = 0.0; // bar 1 = start of the take
-                metronome.Resync();
+                // Grid lock: if another loop is playing, find the 8th of its
+                // grid nearest to this moment, and which take frame that is
+                // (frame rec_len-1 is this sample). If it's earlier than the
+                // pre-roll, pad the take with silence so it starts there.
+                int m = -1;
+                for(int o = 0; o < kNumTracks && m < 0; o++)
+                    if(o != t && tracks[o].tape.IsPlaying())
+                        m = o;
+                if(m >= 0)
+                {
+                    const TapeLoop& mt = tracks[m].tape;
+                    const Params&   mp = tracks[m].params;
+                    const double    e  = EighthSamples(tr.params.bpm, sample_rate);
+                    const GridPoint gp = FindGridPoint(mt.Head() / double(mt.Rate()), // real samples
+                                                       e, uint32_t(tr.tape.RecordedLength()));
+                    tr.tape.InsertSilence(gp.pad);
+                    tr.tape.SetGridLock(gp.idx, GridUnit(mp.synced, mp.length8,
+                                                         mt.RegionLength() / double(mt.Rate()), e));
+                }
+                else
+                {
+                    free_pos = 0.0; // nothing playing: bar 1 = start of the take
+                    metronome.Resync();
+                }
             }
             was_rec[t] = tr.tape.IsRecording();
 
@@ -472,6 +556,7 @@ void setup()
     }
     reverb_bus.Init(sample_rate, &reverb, reverb_predelay);
     metronome.Init(sample_rate);
+    midi_clock.Init(sample_rate);
     controls.Init(sample_rate / kBlockSize, sample_rate); // once per block
 
     display.Init();
@@ -528,6 +613,16 @@ void loop()
         s.cpu_peak      = cpu.Peak();
         s.throttled     = throttled || gov_scale < 0.99f;
         s.grains_allowed = grains_allowed[sel];
+        s.midi_sync      = midi_clock.Active();
+        {
+            const float beat = 60.f / tr.params.bpm * sample_rate;
+            const int32_t left = tr.count_left;
+            s.count_beats = left >= 0 ? int(ceilf(float(left) / beat)) : 0;
+            s.in_time     = false;
+            for(int o = 0; o < kNumTracks; o++)
+                if(o != sel && tracks[o].tape.IsPlaying())
+                    s.in_time = true;
+        }
         s.browser       = &browser;
         s.track         = sel;
         for(int o = 0, k = 0; o < kNumTracks; o++) // the other tracks (footer)

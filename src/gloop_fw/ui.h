@@ -29,6 +29,9 @@ struct UiState
     float             cpu_peak  = 0.f;   // worst block in the last second
     bool              throttled = false; // safety valve is limiting grains
     int               fps       = 0;     // screen frames in the last second
+    int               count_beats = 0;   // count-in: beats left (4..1)
+    bool              in_time   = false; // another loop is playing (grid lock)
+    bool              midi_sync = false; // BPM follows MIDI clock in
     int               grains_allowed = -1; // grains this track actually gets
                                            // from the shared pool (-1: n/a)
 

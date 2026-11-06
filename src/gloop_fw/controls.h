@@ -33,9 +33,13 @@
 //                                the 8th-note grid.
 //   SHIFT + LENGTH             : free length, not locked to the BPM
 //   SHIFT + encoder push       : reset that parameter to its default
-//   REC                        : ARM: recording starts when input arrives.
-//                                Again while armed: cancel. While recording:
-//                                finish the take (→ it loops)
+//   REC                        : ARM: recording starts when input arrives
+//                                (locked to a playing loop's grid if one is
+//                                playing). Again while armed: cancel. While
+//                                recording: finish the take (a grid-locked
+//                                take finishes on the nearest bar line)
+//   Hold REC + PLAY            : count-in arm; PLAY then counts 4 beats and
+//                                records on the beat (REC/PLAY cancels)
 //   SHIFT + REC                : start recording immediately (no waiting)
 //   SHIFT + PLAY               : metronome on / off (it clicks while a track
 //                                is armed or recording; see metronome.h)
@@ -314,16 +318,22 @@ class Controls
         if(rec_.RisingEdge())
         {
             if(tape.IsRecording())
-                tape.StopRecording(); // finish the take → loops
+                tape.RequestStop(); // finish the take → loops
             else if(shift_held_)
                 tape.StartRecording(); // SHIFT + REC: record now
-            else if(tape.IsArmed())
+            else if(tape.IsArmed() || tape.IsCountReady() || tape.IsCounting())
                 tape.Disarm(); // second press: cancel
             else
-                tape.Arm(); // wait for input
+                tape.Arm(); // wait for input (in time with a playing loop)
         }
-        if(play_.RisingEdge() && shift_held_)
+        if(play_.RisingEdge() && rec_.Pressed() && tape.IsArmed())
+            tape.ArmCountIn(); // hold REC + PLAY: count-in arm
+        else if(play_.RisingEdge() && shift_held_)
             metronome_on_ = !metronome_on_; // SHIFT + PLAY: click on / off
+        else if(play_.RisingEdge() && tape.IsCountReady())
+            tape.StartCountIn(); // 4 beats, then record on the beat
+        else if(play_.RisingEdge() && tape.IsCounting())
+            tape.Disarm(); // PLAY during the count-in: cancel
         else if(play_.RisingEdge())
         {
             bool any_playing = false;
@@ -331,7 +341,7 @@ class Controls
                 any_playing |= tapes[t]->IsPlaying();
 
             if(tape.IsRecording())
-                tape.StopRecording(); // joins in / starts all: gloop_fw.ino
+                tape.RequestStop(); // joins in / starts all: gloop_fw.ino
             else if(any_playing)
                 for(int t = 0; t < kNumTracks; t++)
                     tapes[t]->Stop();
