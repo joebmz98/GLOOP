@@ -250,7 +250,8 @@ void Ui::DrawLoop(const UiState& s)
     // The label shows the loaded sample's name (11 characters fit)
     char label[12];
     {
-        const char* def = s.track == 1 ? "GLOOP B" : "GLOOP A";
+        static const char* const kDef[3] = {"GLOOP A", "GLOOP B", "GLOOP C"};
+        const char* def = kDef[s.track < 0 ? 0 : (s.track > 2 ? 2 : s.track)];
         int         n   = 0;
         for(; def[n]; n++)
             label[n] = def[n];
@@ -1382,6 +1383,8 @@ void Ui::DrawFooter(const UiState& s)
         total += Gfx::TextWidth(n, Gfx::kSmall) + gap;
     total -= gap;
     int x = kSW / 2 - total / 2;
+    if(x < 38)
+        x = 38; // room for the other tracks' status on the left
     for(int i = 0; i < kNumPages && !s.shift; i++) // SHIFT: FPS here instead
     {
         const char* n = kPageNames[i];
@@ -1444,31 +1447,35 @@ void Ui::DrawTrackChip(const UiState& s)
 {
     // Muted (SHIFT + track button): dark chip with dim text
     g_.FillRect(0, 0, 13, 11, s.muted ? D : W);
-    g_.Text(1, 2, s.track == 1 ? "T2" : "T1", s.muted ? L : B, Gfx::kBig);
+    g_.Text(1, 2, TrackName(s.track), s.muted ? L : B, Gfx::kBig);
 }
 
-// Footer, bottom left: what the OTHER track is doing, so you can see both
-// tracks at a glance (e.g. "T2" + play triangle)
+// Footer, bottom left: what the OTHER tracks are doing, so you can see every
+// track at a glance (e.g. "T2" + play triangle, "T3" + stop square). A muted
+// track's name is dark with a line through it.
 void Ui::DrawOtherTrack(const UiState& s)
 {
-    if(!s.other_tape)
-        return;
-    const TapeLoop& t = *s.other_tape;
-    const int       x = 2, y = kFootLine + 3;
-    g_.Text(x, y, s.track == 1 ? "T1" : "T2", M, Gfx::kSmall);
-    if(s.other_muted) // "M" chip after the state glyph
-        g_.Chip(x + 16, kFootLine + 1, "M", Gfx::kSmall);
-    const int gx = x + 10, gy = y + 2;
     const bool on = (frame_ / 8) % 2 == 0;
-    if(t.IsRecording())
-        g_.FillCircle(gx + 2, gy, 2, on ? W : M);
-    else if(t.IsArmed())
-        g_.Circle(gx + 2, gy, 2, on ? W : M);
-    else if(t.IsPlaying())
-        for(int i = 0; i < 3; i++)
-            g_.VLine(gx + i, gy - 2 + i, gy + 2 - i, L);
-    else if(t.HasLoop())
-        g_.FillRect(gx, gy - 2, 4, 4, M);
+    for(int k = 0; k < kNumTracks - 1; k++)
+    {
+        if(!s.others[k])
+            continue;
+        const TapeLoop& t = *s.others[k];
+        const int       x = 2 + k * 16, y = kFootLine + 3;
+        g_.Text(x, y, TrackName(s.other_id[k]), s.other_muted[k] ? D : M, Gfx::kSmall);
+        if(s.other_muted[k])
+            g_.HLine(x - 1, x + 7, y + 2, L); // struck through: muted
+        const int gx = x + 9, gy = y + 2;
+        if(t.IsRecording())
+            g_.FillCircle(gx + 2, gy, 2, on ? W : M);
+        else if(t.IsArmed())
+            g_.Circle(gx + 2, gy, 2, on ? W : M);
+        else if(t.IsPlaying())
+            for(int i = 0; i < 3; i++)
+                g_.VLine(gx + i, gy - 2 + i, gy + 2 - i, L);
+        else if(t.HasLoop())
+            g_.FillRect(gx, gy - 2, 4, 4, M);
+    }
 }
 
 void Ui::DrawMask(const char* const* rows, int h, int x, int y, uint16_t c)
@@ -1663,7 +1670,7 @@ void Ui::DrawBrowserInfo(const Browser& b)
         cell(0, "FILES", a);
         cell(1, "TOTAL", n ? c : "-");
         cell(2, "SOURCE", f == 0 ? "BUILT IN" : "SD CARD");
-        cell(3, "LOADS TO", b.track() == 1 ? "T2" : "T1");
+        cell(3, "LOADS TO", TrackName(b.track()));
     }
     else if(b.cursor() == 0)
     {
@@ -1677,7 +1684,7 @@ void Ui::DrawBrowserInfo(const Browser& b)
         cell(0, "LENGTH", a);
         cell(1, "CHANNELS", smp.stereo ? "STEREO" : "MONO");
         cell(2, "FITS TAPE", smp.seconds <= 60.f ? "YES" : "TRIMMED");
-        cell(3, "LOADS TO", b.track() == 1 ? "T2" : "T1");
+        cell(3, "LOADS TO", TrackName(b.track()));
     }
 }
 
@@ -1688,7 +1695,7 @@ void Ui::DrawBrowserHints(const Browser& b)
     const char* push = "OPEN";
     if(b.level() == Browser::kFolder)
         push = b.cursor() == 0 ? "BACK" : "LOAD";
-    const char* keys[3]    = {"TURN", "PUSH", b.track() == 1 ? "T2" : "T1"};
+    const char* keys[3]    = {"TURN", "PUSH", TrackName(b.track())};
     const char* actions[3] = {"MOVE", push, "EXIT"};
     int         total      = 0;
     for(int i = 0; i < 3; i++)

@@ -1,6 +1,6 @@
 # GLOOP — 2-track granular looper firmware
 
-Daisy Seed firmware, built with the Arduino IDE. Two tracks, each: tape looper → grain cloud → filter (LP/HP/BP) → chorus → resonator, mixed into one shared reverb. 240×280 ST7789 TFT (landscape) and a sample browser.
+Daisy Seed firmware, built with the Arduino IDE. Three tracks, each: tape looper → grain cloud → filter (LP/HP/BP) → chorus → resonator, mixed into one shared reverb. 240×280 ST7789 TFT (landscape) and a sample browser.
 
 ## Arduino IDE setup (once)
 
@@ -38,7 +38,7 @@ Open `gloop_fw/gloop_fw.ino` (the Arduino IDE needs the folder and the `.ino` to
 | Encoder 2 A / B / push | D18 / D19 / D20 (pins 25–27) |
 | Encoder 3 A / B / push | D21 / D22 / D23 (pins 28–30) |
 | Encoder 4 A / B / push | D24 / D25 / D26 (pins 31–33) |
-| T1 / T2 | D0 (pin 1) / D1 (pin 2) |
+| T1 / T2 / T3 | D0 (pin 1) / D1 (pin 2) / **D28 (pin 35)** |
 | REC / PLAY | D2 (pin 3) / D3 (pin 4) |
 | LOOP / GRAINS / FX | D4 / D5 / D6 (pins 5–7) |
 | SHIFT | D12 (pin 13) |
@@ -61,16 +61,16 @@ D1–D6 are also the Seed's SD card pins: when SD loading is added, the buttons 
 | FX ▪ REVERB | Size | Tone | Pre-delay | Mix |
 | **Hold FX** (any page) | Filter cutoff | Chorus mix | Resonator mix | Reverb mix |
 
-Everything acts on the **selected track** (T1 or T2, shown in the header chip). The footer's bottom-left shows what the other track is doing.
+Everything acts on the **selected track** (T1, T2 or T3, shown in the header chip). The footer's bottom-left shows what the other two tracks are doing (play triangle, stop square, record dot); a muted one is struck through.
 
-- **T1 / T2:** first press selects that track; pressed again on LOOP opens the sample browser for it (turn any encoder to move, push to open / load).
+- **T1 / T2 / T3:** first press selects that track; pressed again on LOOP opens the sample browser for it (turn any encoder to move, push to open / load).
 - **REC arms** the track: it waits for input and starts recording when the input crosses about -34 dBFS, keeping the 10 ms before the trigger so the first attack isn't lost. The screen shows ARM and a live input meter with the trigger level marked. REC again cancels.
 - **SHIFT + REC** records immediately, without waiting.
-- **Metronome:** while a track is armed or recording it clicks every beat at the BPM (4/4, higher click on beat 1), with four beat dots in the header. If the other track is playing, beat 1 is that loop's start, so a new take stays in time with it; otherwise it starts when you arm and restarts on beat 1 when recording begins. The click goes to the output only, never into a recording. **SHIFT + PLAY** turns it on/off (dots show hollow when off).
+- **Metronome:** while a track is armed or recording it clicks every beat at the BPM (4/4, higher click on beat 1), with four beat dots in the header. If another track is playing, beat 1 is that loop's start, so a new take stays in time with it; otherwise it starts when you arm and restarts on beat 1 when recording begins. The click goes to the output only, never into a recording. **SHIFT + PLAY** turns it on/off (dots show hollow when off).
 - While recording, REC or PLAY closes the loop and plays it. A take stops by itself at **30 s** (`kMaxLoopSeconds`).
-- **PLAY is global:** it stops both tracks if either is playing, otherwise starts both from their loop start points, in sync. If the selected track is recording, PLAY finishes the take instead.
-- **When a take finishes** (REC, PLAY or the 30 s limit): if the other track is already playing, the new loop **joins in** straight away; if nothing was playing, both tracks start together from their loop start.
-- **BPM:** SHIFT + START sets the tempo (40–240, shared by both tracks), shown next to LOOP in the header.
+- **PLAY is global:** it stops every track if any is playing, otherwise starts them all from their loop start points, in sync. If the selected track is recording, PLAY finishes the take instead.
+- **When a take finishes** (REC, PLAY or the 30 s limit): if another track is already playing, the new loop **joins in** straight away; if nothing was playing, every track with a loop starts together from its loop start.
+- **BPM:** SHIFT + START sets the tempo (40–240, shared by all tracks), shown next to LOOP in the header.
 - **LENGTH** is counted in 8th notes at that BPM (shown as e.g. `6/8`, `16/8`), so loops stay in time when the BPM changes. A new take is fitted to the most whole 8ths it holds.
 - **SHIFT + LENGTH** frees the length from the grid (shown in seconds). Turning LENGTH again without SHIFT snaps it back onto the nearest 8th.
 - **GRAINS 0** is just the loop; **1–12** add that many grains alongside the loop. The cloud's level is matched to the loop automatically, so changing GRAINS / SPRAY / ENV / SIZE doesn't jump the volume.
@@ -83,10 +83,10 @@ Everything acts on the **selected track** (T1 or T2, shown in the header chip). 
 - **FILTER:** TYPE switches **LP / HP / BP** with a 5 ms crossfade. If the filter was wide open it stays open for the new type (e.g. HP moves CUTOFF to the bottom); SHIFT + push on CUTOFF resets it to the open position for the current type. **DRIVE** pushes the sound through a soft clip into the filter, with make-up gain so it gets grittier rather than louder (0 = clean). The picture: the response curve across the screen, shimmering with heat when driven, plus a small sine top right that squashes as DRIVE goes up.
 - **CHORUS:** RATE 0.05–10 Hz, DEPTH ±0.5–8 ms, WIDTH from mono (L and R sweep together) to widest (half a cycle apart), MIX 0 = off. The picture is a little choir: one silent singer at MIX 0 and up to eight singing at 100%; they stand further apart with WIDTH, sway more with DEPTH and sing in time with RATE.
 - **RESONATOR** (DaisySP's Rings-style modal resonator): FREQ is the note it rings at (C1–C7, e.g. `A2`); STRUCT 0–25% squeezed overtones, 25–30% harmonic (string / tube), above that stretched and inharmonic (bar, bell); DECAY from a dull knock to a ~30 s drone (DaisySP's "damping"; higher = rings longer); BRIGHT (hold encoder 2 + turn) from wood to glass; **MIX 0% = off** (the default, and then it costs no CPU). Its level is matched to the input automatically. The picture is a wine glass played with a wet finger: FREQ is the water level (more water = lower note), STRUCT morphs the glass from a narrow flute to a wide bowl, BRIGHT makes it shine, DECAY sets how many sound waves ripple out; the finger only circles the rim while MIX is up.
-- **REVERB:** SIZE (feedback), TONE (damping, 1–18 kHz: dark → bright), **PRE-DLY** (0–250 ms before the reverb starts, so the dry sound stays clear) and MIX (this track's send). SIZE, TONE and PRE-DLY are shared by both tracks (one reverb); MIX is per track. The picture is a cathedral nave: SIZE adds arches, TONE lets you see further down it, and the echo rings leave the singer after a gap set by PRE-DLY.
-- **SHIFT + T1 / T2 mutes** that track (press again to unmute). It keeps playing silently, so it stays in sync; the fade is about 4 ms so there's no click. A muted track's header chip turns dark, and the footer shows **M** next to the other track when that one is muted. Its reverb tail still rings out.
+- **REVERB:** SIZE (feedback), TONE (damping, 1–18 kHz: dark → bright), **PRE-DLY** (0–250 ms before the reverb starts, so the dry sound stays clear) and MIX (this track's send). SIZE, TONE and PRE-DLY are shared by all tracks (one reverb); MIX is per track. The picture is a cathedral nave: SIZE adds arches, TONE lets you see further down it, and the echo rings leave the singer after a gap set by PRE-DLY.
+- **SHIFT + T1 / T2 / T3 mutes** that track (press again to unmute). It keeps playing silently, so it stays in sync; the fade is about 4 ms so there's no click. A muted track's header chip turns dark, and in the footer a muted track's name is struck through. Its reverb tail still rings out.
 - SHIFT + turn = fine adjust (or the alternate parameter where there is one). **SHIFT + push** resets that parameter to its default (a push on its own no longer resets, so hold + turn is safe).
-- Reverb **SIZE / TONE / PRE-DLY** and the **BPM** are shared by both tracks; every other parameter is per track.
+- Reverb **SIZE / TONE / PRE-DLY** and the **BPM** are shared by all tracks; every other parameter is per track.
 - Hold SHIFT to show CPU load (peak / average) and the screen frame rate (FPS) in the footer.
 
 ## Display speed
@@ -99,8 +99,8 @@ SPI1's clock divides by powers of 2 (50 MHz → 25 or 12.5 MHz). For 40 MHz, set
 
 | Limit | Value | Where |
 |---|---|---|
-| Grain voices per track | 12 (24 across both tracks) | `GrainCloud::kMaxGrains` (`grains.h`) |
-| Loop length per track | 30 s (16-bit stereo, 5.8 MB) | `kMaxLoopSeconds` (`gloop_fw.ino`) |
+| Grain voices per track | 12 (36 across the three tracks; the CPU safety valve thins them if all are maxed) | `GrainCloud::kMaxGrains` (`grains.h`) |
+| Loop length per track | 30 s (16-bit stereo, 5.8 MB; 17.3 MB of the 64 MB SDRAM for three) | `kMaxLoopSeconds` (`gloop_fw.ino`) |
 | CPU safety valve | stops new grains above 80% average / 90% peak, resumes below 70% | `gloop_fw.ino` |
 | Output | soft limiter from 0.8 of full scale | `OutputLimit()` (`gloop_fw.ino`) |
 

@@ -10,7 +10,9 @@
 //
 // Free for later:
 //   D13/D14 : USART1 (D14 = RX for TRS MIDI in)
-//   D28–D30 : spare GPIO (D27 is reserved: the display's unused SPI MISO)
+//   D28     : T3 button
+//   D29–D30 : spare GPIO (e.g. a T4 button). D27 is reserved: the display's
+//             unused SPI MISO
 // =============================================================================
 #pragma once
 #include <stdint.h>
@@ -39,7 +41,8 @@ constexpr uint8_t kEncSw[4] = {17, 20, 23, 26};
 
 // --- Buttons (to GND, internal pull-ups) ------------------------------------
 constexpr uint8_t kBtnTrack1 = 0;  // D0  T1: select track / open sample browser
-constexpr uint8_t kBtnTrack2 = 1;  // D1  T2: select track 2 (no engine yet)
+constexpr uint8_t kBtnTrack2 = 1;  // D1  T2
+constexpr uint8_t kBtnTrack3 = 28; // D28 (pin 35) T3
 constexpr uint8_t kBtnRec    = 2;  // D2
 constexpr uint8_t kBtnPlay   = 3;  // D3
 constexpr uint8_t kBtnLoop   = 4;  // D4

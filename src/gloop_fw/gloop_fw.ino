@@ -100,8 +100,8 @@ static DaisyHardware hw;
 static float         sample_rate;
 static Track         tracks[kNumTracks];
 // The controls edit each track's params and tape through these
-static Params*       track_params[kNumTracks] = {&tracks[0].params, &tracks[1].params};
-static TapeLoop*     track_tapes[kNumTracks]  = {&tracks[0].tape, &tracks[1].tape};
+static Params*       track_params[kNumTracks] = {&tracks[0].params, &tracks[1].params, &tracks[2].params};
+static TapeLoop*     track_tapes[kNumTracks]  = {&tracks[0].tape, &tracks[1].tape, &tracks[2].tape};
 static EnvelopeTable envelopes;
 static ReverbBus     reverb_bus;
 static Controls      controls;
@@ -196,7 +196,7 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
     }
 
     // ---- 2. Block-rate engine updates, per track ----
-    static bool was_playing[kNumTracks] = {false, false};
+    static bool was_playing[kNumTracks] = {};
     bool any_send = false;
     bool grain_mode[kNumTracks];
     bool playing[kNumTracks];
@@ -261,8 +261,8 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
     // A slowly-moving gain then makes the grain cloud as loud as the loop, so
     // switching GRAINS 1 → 2..12, or changing SPRAY / ENV / SIZE, doesn't
     // change the volume. The gain ramps across each block (no zipper noise).
-    float ref_sum[kNumTracks]   = {0.f, 0.f};
-    float grain_sum[kNumTracks] = {0.f, 0.f};
+    float ref_sum[kNumTracks]   = {};
+    float grain_sum[kNumTracks] = {};
     const float inv_size        = 1.f / float(size);
     float in_pk = 0.f;
 
@@ -270,8 +270,8 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
     // Beat 1 follows a loop that's playing (its loop start), so a new take
     // stays in time with it. With nothing playing it runs from the moment a
     // track is armed, and restarts on beat 1 when the recording begins.
-    static bool   was_armed[kNumTracks] = {false, false};
-    static bool   was_rec[kNumTracks]   = {false, false};
+    static bool   was_armed[kNumTracks] = {};
+    static bool   was_rec[kNumTracks]   = {};
     static double free_pos              = 0.0;
     bool          click_on              = false;
     int           follow                = -1;
@@ -474,7 +474,14 @@ void loop()
         s.throttled     = throttled;
         s.browser       = &browser;
         s.track         = sel;
-        s.other_tape    = &tracks[1 - sel].tape;
+        for(int o = 0, k = 0; o < kNumTracks; o++) // the other tracks (footer)
+            if(o != sel)
+            {
+                s.others[k]       = &tracks[o].tape;
+                s.other_id[k]     = o;
+                s.other_muted[k]  = controls.muted(o);
+                k++;
+            }
         s.input_peak    = input_peak;
         s.metro_active  = metro_active;
         s.metro_beat    = metro_beat;
@@ -485,7 +492,6 @@ void loop()
         s.popup        = controls.popup();
         s.popup_age_ms = controls.popup_age_ms();
         s.muted         = controls.muted(sel);
-        s.other_muted   = controls.muted(1 - sel);
         s.chorus_phase  = tr.chorus.Phase();
         s.res_level     = tr.res.Level();
         s.tape_name     = tr.tape_name;

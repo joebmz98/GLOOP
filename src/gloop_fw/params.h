@@ -65,6 +65,15 @@ enum class Page : int
 };
 constexpr int kNumPages = 3;
 
+// Tracks (T1..T3). Shared by the engine, controls and UI.
+constexpr int kNumTracks = 3;
+// "T1", "T2", "T3"
+inline const char* TrackName(int t)
+{
+    static const char* const kNames[3] = {"T1", "T2", "T3"};
+    return kNames[t < 0 ? 0 : (t > 2 ? 2 : t)];
+}
+
 // The FX page is four pages, one per effect (FX cycles, SHIFT + FX goes back)
 enum class FxPage : int
 {

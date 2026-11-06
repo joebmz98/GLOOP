@@ -1,7 +1,7 @@
 // =============================================================================
 // browser.h — the sample browser (state + navigation) and the sample library
 //
-// Opening it:  press a track button (T1/T2) to select that track, then press
+// Opening it:  press a track button (T1/T2/T3) to select that track, then press
 //              it again while on the LOOP page. Samples load into that track.
 // In the menu: turn ANY encoder to move, push ANY encoder to open / choose.
 //              SHIFT + turn jumps 5 rows. The track button closes the menu,

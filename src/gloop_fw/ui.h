@@ -33,7 +33,8 @@ struct UiState
     // Sample browser / loading
     const Browser* browser        = nullptr; // menu shown when open
     int             track      = 0;       // selected track: 0 = T1, 1 = T2
-    const TapeLoop* other_tape = nullptr; // the other track (footer status)
+    const TapeLoop* others[kNumTracks - 1] = {}; // the other tracks (footer)
+    int             other_id[kNumTracks - 1] = {}; // ...which track each is
     float           input_peak = 0.f;     // input level (record-arm meter)
     bool            metro_active  = false; // metronome clicking
     bool            metro_enabled = true;  // SHIFT + PLAY toggles
@@ -44,7 +45,7 @@ struct UiState
     const ParamDesc* popup       = nullptr;  // last parameter turned
     uint32_t        popup_age_ms = 100000;   // ...and how long ago
     bool            muted        = false; // selected track muted
-    bool            other_muted  = false; // other track muted
+    bool            other_muted[kNumTracks - 1] = {}; // other tracks muted
     float           chorus_phase = 0.f;   // for the FX page 2 picture
     float           res_level    = 0.f;   // resonator output level (FX page 2)
     const char*    tape_name      = nullptr; // sample on the tape (label)
@@ -116,8 +117,8 @@ class Ui
     Gfx                  g_;
     St7789*              display_                 = nullptr;
     const EnvelopeTable* env_                     = nullptr;
-    float                overview_[2][kOverviewCols] = {};
-    bool                 has_overview_[2]            = {false, false};
+    float                overview_[kNumTracks][kOverviewCols] = {};
+    bool                 has_overview_[kNumTracks]            = {};
     float                reel_angle_              = 0.f;
     uint32_t             frame_                   = 0;
     CatState             cat_state_               = kSleeping;

@@ -6,7 +6,7 @@
 //
 // Everything acts on the SELECTED track (T1 or T2):
 //
-//   T1 / T2 (track buttons)    : 1st press selects that track; pressed again
+//   T1 / T2 / T3 (track buttons): 1st press selects that track; pressed again
 //                                on the LOOP page it opens the sample browser
 //                                for that track (from another page it jumps to
 //                                LOOP first)
@@ -22,7 +22,7 @@
 //                                nothing)
 //   Hold an encoder + turn     : its second parameter, where it has one
 //                                (RESONATOR enc 2 = BRIGHT)
-//   SHIFT + T1 / T2            : mute / unmute that track
+//   SHIFT + T1 / T2 / T3       : mute / unmute that track
 //   Encoder turn               : edit that page's parameter (selected track)
 //   SHIFT + turn               : fine adjust (x0.1), or the alternate
 //                                parameter where one exists:
@@ -65,7 +65,6 @@
 
 namespace gloop
 {
-static constexpr int kNumTracks = 2;
 
 class Controls
 {
@@ -90,6 +89,7 @@ class Controls
         shift_.Init(update_rate, true, pins::kBtnShift, INPUT_PULLUP);
         track_[0].Init(update_rate, true, pins::kBtnTrack1, INPUT_PULLUP);
         track_[1].Init(update_rate, true, pins::kBtnTrack2, INPUT_PULLUP);
+        track_[2].Init(update_rate, true, pins::kBtnTrack3, INPUT_PULLUP);
     }
 
     // params / tapes: one pointer per track
@@ -355,7 +355,7 @@ class Controls
     uint32_t       now_ms_   = 0;     // Process() runs at 1 kHz
     const ParamDesc* popup_  = nullptr;
     uint32_t       popup_ms_ = 0;
-    bool           muted_[kNumTracks] = {false, false};
+    bool           muted_[kNumTracks] = {};
 };
 
 } // namespace gloop
