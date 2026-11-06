@@ -44,6 +44,7 @@
 #include "grains.h"
 #include "metronome.h"
 #include "midi_clock.h"
+#include "modulation.h"
 #include "record_sync.h"
 #include "params.h"
 #include "st7789.h"
@@ -76,6 +77,14 @@ struct Track
     StereoChorus chorus;
     ModalResonator res;
     float        mute_gain = 1.f; // glides to 0 when muted (no click)
+
+    // LFO page: the LFO / envelope follower, and the modulated copy of the
+    // params that the engine actually uses this block (see modulation.h)
+    ModSource mod;
+    Params    live;
+    float     vol = 1.f, vol_prev = 1.f; // VOLUME modulation, ramped per block
+    float     blk_pk = 0.f; // peak after the FX, before the mute (this block)
+    float     level  = 0.f; // ...the last block's (ENV follows this)
 
     int32_t count_left = -1; // count-in: samples until the take starts
     const char* tape_name = nullptr; // sample loaded onto the tape (label)
@@ -255,11 +264,38 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
     bool grain_mode[kNumTracks];
     bool playing[kNumTracks];
 
+    // ---- 2a. Modulation (LFO page): each track's LFO / envelope follower
+    // moves one parameter of a copy of its params (tr.live), which is what
+    // the engine uses below. The reverb's shared settings collect every
+    // track's modulation in `shared`.
+    static bool mod_was_playing[kNumTracks] = {};
+    Params      shared = tracks[0].params; // SIZE / TONE / PRE-DLY are shared
+    for(int t = 0; t < kNumTracks; t++)
+    {
+        Track&    tr  = tracks[t];
+        const int src = int(tr.params.env_src + 0.5f);
+        const float level = src >= 0 && src < kNumTracks ? tracks[src].level : input_peak;
+        const bool  play  = tr.tape.IsPlaying();
+        if(play && !mod_was_playing[t])
+            tr.mod.Restart(); // the LFO lines up with the loop
+        mod_was_playing[t] = play;
+
+        const float sig  = tr.mod.Process(tr.params, level);
+        const int   dest = int(tr.params.lfo_dest + 0.5f);
+        tr.live          = tr.params;
+        tr.vol_prev      = tr.vol;
+        float vol        = 1.f;
+        if(fabsf(tr.params.lfo_depth) > 0.0005f)
+            ApplyMod(ModDestShared(dest) ? shared : tr.live, dest, sig, tr.params.lfo_depth,
+                     tr.mod.EnvMode(), &vol);
+        tr.vol = vol;
+    }
+
     // Share the grain pool between the playing tracks (see above)
     int want[kNumTracks], allow[kNumTracks], total = 0, users = 0;
     for(int t = 0; t < kNumTracks; t++)
     {
-        want[t] = tracks[t].tape.IsPlaying() ? int(tracks[t].params.grains + 0.5f) : 0;
+        want[t] = tracks[t].tape.IsPlaying() ? int(tracks[t].live.grains + 0.5f) : 0;
         total += want[t];
         users += want[t] > 0;
     }
@@ -290,7 +326,7 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
     for(int t = 0; t < kNumTracks; t++)
     {
         Track&        tr   = tracks[t];
-        const Params& p    = tr.params;
+        const Params& p    = tr.live; // the params with this block's modulation
         const float   rate = powf(2.f, p.pitch / 12.f); // varispeed
 
         // LENGTH: whole 8th notes at the BPM (synced), or free (SHIFT+LENGTH)
@@ -340,8 +376,8 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
         if(playing[t] && grain_mode[t])
             tr.cloud.ProcessBlock(tr.tape, tr.grain_l, tr.grain_r, size);
     }
-    const Params& rp = tracks[0].params; // SIZE / TONE / PRE-DLY are shared
-    reverb_bus.SetParams(rp.rev_size, rp.rev_tone, rp.rev_predelay, any_send);
+    // SIZE / TONE / PRE-DLY are shared (with every track's modulation of them)
+    reverb_bus.SetParams(shared.rev_size, shared.rev_tone, shared.rev_predelay, any_send);
 
     // ---- 4. Per sample: record, tape playback, filter, mix, reverb, out ----
     //
@@ -486,14 +522,20 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
             tr.filter.Process(l, r);
             tr.chorus.Process(l, r);
             tr.res.Process(l, r);
+            // Level for the envelope followers (before the mute, so a muted
+            // track can still drive another track's ENV)
+            tr.blk_pk = fmaxf(tr.blk_pk, fmaxf(fabsf(l), fabsf(r)));
 
             // Mute (SHIFT + track button): ~4 ms glide, the track keeps
-            // running underneath so it comes back in time
+            // running underneath so it comes back in time. VOLUME
+            // modulation ramps across the block.
             tr.mute_gain += 0.005f * ((controls.muted(t) ? 0.f : 1.f) - tr.mute_gain);
-            l *= tr.mute_gain;
-            r *= tr.mute_gain;
+            const float vg = tr.mute_gain
+                             * (tr.vol_prev + (tr.vol - tr.vol_prev) * float(i + 1) * inv_size);
+            l *= vg;
+            r *= vg;
 
-            const float send = tr.params.rev_mix;
+            const float send = tr.live.rev_mix;
             mix_l += l * (1.f - send);
             mix_r += r * (1.f - send);
             send_l += l * send;
@@ -516,6 +558,8 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
     for(int t = 0; t < kNumTracks; t++)
     {
         Track& tr     = tracks[t];
+        tr.level      = tr.blk_pk; // for the envelope followers, next block
+        tr.blk_pk     = 0.f;
         tr.gain_prev  = tr.gain;
         if(!(playing[t] && grain_mode[t]))
             continue;
@@ -554,6 +598,8 @@ void setup()
         tracks[t].filter.Init(sample_rate);
         tracks[t].chorus.Init(sample_rate);
         tracks[t].res.Init(sample_rate);
+        tracks[t].mod.Init(sample_rate / kBlockSize, 0x9E3779B9u * uint32_t(t + 1));
+        tracks[t].live = tracks[t].params;
     }
     reverb_bus.Init(sample_rate, &reverb, reverb_predelay);
     metronome.Init(sample_rate);
@@ -650,6 +696,8 @@ void loop()
         s.muted         = controls.muted(sel);
         s.chorus_phase  = tr.chorus.Phase();
         s.res_level     = tr.res.Level();
+        s.mod_out       = tr.mod.Out();   // LFO page
+        s.mod_phase     = tr.mod.Phase();
         s.tape_name     = tr.tape_name;
         s.fps           = fps_shown;
         s.load_name     = loading_track == sel ? loading_name : nullptr;

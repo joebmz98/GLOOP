@@ -1,5 +1,5 @@
 // =============================================================================
-// ui.h — draws the LOOP / GRAINS / FX screens from the live engine state
+// ui.h — draws the LOOP / GRAINS / FX / LFO screens from the live engine state
 //
 // The UI only READS engine state (tape head, grain pool, params). It runs in
 // loop(), never in the audio interrupt, so a slow frame can only drop the
@@ -59,6 +59,8 @@ struct UiState
     const char*    tape_name      = nullptr; // sample on the tape (label)
     const char*    load_name      = nullptr; // sample being loaded
     float          load_progress  = -1.f;    // 0..1 while loading, else <0
+    float          mod_out        = 0.f;     // LFO -1..1 / ENV 0..1 (LFO page)
+    float          mod_phase      = 0.f;     // LFO phase 0..1
 };
 
 class Ui
@@ -76,6 +78,7 @@ class Ui
     void DrawLoop(const UiState& s);
     void DrawGrains(const UiState& s);
     void DrawFx(const UiState& s);
+    void DrawLfo(const UiState& s);
     void DrawReadouts(const UiState& s);
     void DrawPopup(const UiState& s);
     void DrawFooter(const UiState& s);
@@ -128,6 +131,10 @@ class Ui
     bool                 has_overview_[kNumTracks]            = {};
     float                reel_angle_              = 0.f;
     uint32_t             frame_                   = 0;
+    static constexpr int kModHist = 134; // LFO page scope, one column per frame
+    float                mod_hist_[kModHist]      = {};
+    int                  mod_hist_w_              = 0;
+    int                  mod_hist_track_          = -1;
     CatState             cat_state_               = kSleeping;
     int                  cat_t_                   = 0; // frames in this state
 };

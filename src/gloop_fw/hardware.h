@@ -11,7 +11,8 @@
 // Free for later:
 //   D13/D14 : USART1 (D14 = RX for TRS MIDI in)
 //   D28     : T3 button
-//   D29–D30 : spare GPIO (e.g. a T4 button). D27 is reserved: the display's
+//   D29     : LFO button
+//   D30     : spare GPIO (e.g. a T4 button). D27 is reserved: the display's
 //             unused SPI MISO
 // =============================================================================
 #pragma once
@@ -48,6 +49,7 @@ constexpr uint8_t kBtnPlay   = 3;  // D3
 constexpr uint8_t kBtnLoop   = 4;  // D4
 constexpr uint8_t kBtnGrains = 5;  // D5
 constexpr uint8_t kBtnFx     = 6;  // D6
+constexpr uint8_t kBtnLfo    = 29; // D29 (pin 36) LFO page / LFO ⇄ ENV
 constexpr uint8_t kBtnShift  = 12; // D12
 
 } // namespace pins

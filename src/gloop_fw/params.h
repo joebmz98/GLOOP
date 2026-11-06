@@ -55,6 +55,17 @@ struct Params
     float rev_tone     = 0.8f; // 0..1 → damping 1 kHz..18 kHz
     float rev_predelay = 0.f;  // 0..0.25 s
     float rev_mix      = 0.f;  // 0..1 send (dry/wet)
+
+    // LFO page: one modulation source per track, either an LFO or an
+    // envelope follower (LFO pressed again switches). DEPTH and DEST are
+    // shared by both modes. See modulation.h.
+    float lfo_mode    = 0.f;   // 0 = LFO, 1 = ENV (envelope follower)
+    float lfo_shape   = 0.f;   // 0..6 SINE TRI SQUARE SAW+ SAW- S&H DRIFT
+    float lfo_rate    = 0.4f;  // 0..1 → 0.05..10 Hz (exponential)
+    float lfo_depth   = 0.f;   // -1..1 (negative = inverted)
+    float lfo_dest    = 0.f;   // ModDest index (see kModDestNames)
+    float env_src     = 0.f;   // 0..2 = T1..T3, 3 = audio IN
+    float env_release = 0.2f;  // 0.02..2 s (attack is fixed, ~3 ms)
 };
 
 enum class Page : int
@@ -62,8 +73,9 @@ enum class Page : int
     Loop   = 0,
     Grains = 1,
     Fx     = 2,
+    Lfo    = 3,
 };
-constexpr int kNumPages = 3;
+constexpr int kNumPages = 4;
 
 // Tracks (T1..T3). Shared by the engine, controls and UI.
 constexpr int kNumTracks = 3;
@@ -100,7 +112,25 @@ enum class Format
     FilterType, // 0..3 → "LP" / "HP" / "BP" / "COMB"
     Note,       // MIDI note → "C3", "F#4"
     ToneHz,     // 0..1 → 1..18 kHz → "10K"
+    LfoShape,   // 0..6 → "SINE" .. "DRIFT"
+    ModDest,    // ModDest index → "CUTOFF"
+    EnvSource,  // 0..3 → "T1" / "T2" / "T3" / "IN"
 };
+
+// Where a track's LFO / envelope follower goes (Params::lfo_dest)
+enum class ModDest : int
+{
+    Pitch, Volume, Grains, Spray, Spread, GrainMix, GrainSize,
+    Cutoff, Reso, Drive,
+    ChorusRate, ChorusDepth, ChorusWidth, ChorusMix,
+    ResFreq, ResStruct, ResDecay, ResBright, ResMix,
+    RevSize, RevTone, RevPredelay, RevMix,
+    Count
+};
+constexpr int kNumModDests = int(ModDest::Count);
+extern const char* const kModDestNames[kNumModDests];
+constexpr int kNumLfoShapes = 7;
+extern const char* const kLfoShapeNames[kNumLfoShapes];
 
 // Describes one encoder's job on one page
 // Where CUTOFF leaves the sound untouched for each filter type
@@ -131,6 +161,7 @@ struct EncoderContext
     bool    shift      = false; // SHIFT held
     uint8_t held       = 0;     // bit i: encoder i pushed in (hold + turn)
     bool    fx_held    = false; // FX button held: the FX mixer, any page
+    bool    lfo_env    = false; // LFO page: the track's source is the ENV
 };
 
 // The parameter encoder `enc` edits in this context. Priority:
@@ -138,6 +169,8 @@ struct EncoderContext
 //   encoder held   → its hold-and-turn parameter, if it has one
 //   SHIFT          → its SHIFT parameter, if it has one (else fine adjust)
 //   GRAINS alt     → SIZE / G.PITCH / ENV
+//   LFO page       → SHAPE / RATE / DEPTH / DEST, or in ENV mode
+//                    SOURCE / RELEASE / DEPTH / DEST
 //   otherwise      → the page's normal job
 // *is_alt is set when it isn't the page's normal job (label shown inverted).
 const ParamDesc& EncoderParam(const EncoderContext& c, int enc, bool* is_alt = nullptr);

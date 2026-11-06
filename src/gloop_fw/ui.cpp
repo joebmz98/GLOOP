@@ -46,7 +46,7 @@ static constexpr int kFootLine  = 110;
 static constexpr int kCornerL    = 14;
 static constexpr int kCornerR    = kSW - 15; // last usable column on the right
 
-static const char* const kPageNames[kNumPages] = {"LOOP", "GRAINS", "FX"};
+static const char* const kPageNames[kNumPages] = {"LOOP", "GRAINS", "FX", "LFO"};
 
 void Ui::Init(St7789* display, const EnvelopeTable* env)
 {
@@ -100,6 +100,7 @@ void Ui::Draw(const UiState& s)
         case Page::Loop: DrawLoop(s); break;
         case Page::Grains: DrawGrains(s); break;
         case Page::Fx: DrawFx(s); break;
+        case Page::Lfo: DrawLfo(s); break;
     }
     if(s.load_progress >= 0.f)
         DrawLoading(s);
@@ -1335,6 +1336,139 @@ void Ui::DrawFx(const UiState& s)
 }
 
 // =============================================================================
+// LFO page: the selected track's LFO or envelope follower
+//
+//   LFO, periodic shapes : two cycles of the shape, full size in dark grey
+//                          and scaled by DEPTH in white (flipped when DEPTH
+//                          is negative), with a cursor running at the phase
+//   S&H / DRIFT / ENV    : a scope scrolling right to left, one column per
+//                          frame (ENV: the level, filled from the bottom)
+//   Top line             : LFO / ENV chip → destination, and depth
+// =============================================================================
+static float LfoShapeAt(int shape, float ph) // same maths as ModSource
+{
+    ph -= floorf(ph);
+    switch(shape)
+    {
+        case 0: return sinf(ph * kTwoPi);
+        case 1: return 1.f - 4.f * fabsf(ph - 0.5f);
+        case 2: return ph < 0.5f ? 1.f : -1.f;
+        case 3: return 2.f * ph - 1.f;
+        default: return 1.f - 2.f * ph;
+    }
+}
+
+void Ui::DrawLfo(const UiState& s)
+{
+    const Params& p     = *s.params;
+    const bool    env   = p.lfo_mode > 0.5f;
+    const int     shape = int(p.lfo_shape + 0.5f);
+    const int     dest  = int(p.lfo_dest + 0.5f);
+    const float   depth = p.lfo_depth;
+    const bool    on    = fabsf(depth) > 0.0005f;
+
+    // Top line: [LFO] → CUTOFF            DEPTH -40%
+    const int cw = g_.Chip(1, 13, env ? "ENV" : "LFO", Gfx::kSmall);
+    g_.Text(cw + 4, 15, ">", M, Gfx::kSmall);
+    g_.Text(cw + 10, 15, kModDestNames[dest < 0 ? 0 : (dest >= kNumModDests ? kNumModDests - 1 : dest)],
+            on ? W : M, Gfx::kSmall);
+    {
+        char buf[12];
+        int  k = 0, v = int(lroundf(depth * 100.f));
+        if(v < 0)
+        {
+            buf[k++] = '-';
+            v        = -v;
+        }
+        if(v >= 100)
+            buf[k++] = '1';
+        if(v >= 10)
+            buf[k++] = char('0' + (v / 10) % 10);
+        buf[k++] = char('0' + v % 10);
+        buf[k++] = '%';
+        buf[k]   = 0;
+        g_.TextRight(kSW - 2, 15, buf, on ? L : D, Gfx::kSmall);
+    }
+
+    const int top = kFxTop + 2, bot = kFxBot - 1, x0 = 3, w = kModHist;
+    const int mid = (top + bot) / 2, amp = (bot - top) / 2 - 1;
+
+    // Scope history (kept for the selected track; cleared when it changes)
+    if(mod_hist_track_ != s.track)
+    {
+        for(auto& v : mod_hist_)
+            v = 0.f;
+        mod_hist_track_ = s.track;
+    }
+    mod_hist_[mod_hist_w_] = s.mod_out;
+    mod_hist_w_            = (mod_hist_w_ + 1) % kModHist;
+
+    if(env)
+    {
+        // ENV: SOURCE chip bottom left, the level filled up from the floor
+        static const char* const kSrc[4] = {"T1", "T2", "T3", "IN"};
+        const int src = int(p.env_src + 0.5f);
+        g_.HLine(x0, x0 + w - 1, bot, M);
+        for(int x = 0; x < w; x++)
+        {
+            const float v = mod_hist_[(mod_hist_w_ + x) % kModHist]; // oldest → newest
+            const int   y = bot - int(v * float(bot - top));
+            if(y < bot)
+            {
+                g_.VLine(x0 + x, y + 1, bot - 1, x > w - 4 ? M : D);
+                g_.Pixel(x0 + x, y, on ? W : L);
+            }
+        }
+        g_.Chip(x0, top, kSrc[src < 0 ? 0 : (src > 3 ? 3 : src)], Gfx::kSmall);
+        return;
+    }
+
+    // LFO
+    g_.HLine(x0, x0 + w - 1, mid, D); // centre line
+    for(int x = x0; x < x0 + w; x += 4) // dotted ±full-depth lines
+    {
+        g_.Pixel(x, top, D);
+        g_.Pixel(x, bot, D);
+    }
+    if(shape >= 5) // S&H / DRIFT: random, so show what it has been doing
+    {
+        int prev = mid;
+        for(int x = 0; x < w; x++)
+        {
+            const float v = mod_hist_[(mod_hist_w_ + x) % kModHist];
+            const int   y = mid - int(lroundf(v * (on ? depth : 0.25f) * amp));
+            if(x > 0)
+                g_.Line(x0 + x - 1, prev, x0 + x, y, on ? W : M);
+            prev = y;
+        }
+        g_.Text(x0 + 1, top + 2, shape == 5 ? "S&H" : "DRIFT", M, Gfx::kSmall);
+        return;
+    }
+    // Periodic: two cycles, the cursor at the current phase
+    int prev_full = mid, prev = mid;
+    for(int x = 0; x < w; x++)
+    {
+        const float v  = LfoShapeAt(shape, 2.f * float(x) / float(w - 1));
+        const int   yf = mid - int(lroundf(v * amp));
+        const int   y  = mid - int(lroundf(v * depth * amp));
+        if(x > 0)
+        {
+            g_.Line(x0 + x - 1, prev_full, x0 + x, yf, D);
+            if(on)
+                g_.Line(x0 + x - 1, prev, x0 + x, y, W);
+        }
+        prev_full = yf;
+        prev      = y;
+    }
+    const int   cx = x0 + int(s.mod_phase * 0.5f * float(w - 1)); // first cycle
+    const float cv = LfoShapeAt(shape, s.mod_phase);
+    const int   cy = mid - int(lroundf(cv * (on ? depth : 1.f) * amp));
+    for(int y = top; y <= bot; y += 2)
+        g_.Pixel(cx, y, M);
+    g_.FillCircle(cx, cy, 2, on ? W : L);
+}
+
+// =============================================================================
 // Readouts: 2x2, same arrangement as the encoders
 // =============================================================================
 void Ui::DrawEnvGlyph(int right, int y, int shape, int w, int h)
@@ -1360,6 +1494,7 @@ static EncoderContext ContextOf(const UiState& s)
     c.fx_page        = s.fx_page;
     c.grains_alt     = s.grain_size_mode;
     c.shift          = s.shift;
+    c.lfo_env        = s.params->lfo_mode > 0.5f;
     return c;
 }
 
@@ -1469,7 +1604,8 @@ void Ui::DrawFooter(const UiState& s)
     // page of it, e.g. "1/2" on GRAINS, "3/4" on FX (LOOP has one page).
     if(!s.shift)
     {
-        g_.TextCentered(kSW / 2, kFootLine + 2, kPageNames[int(s.page)], W, Gfx::kBig);
+        const bool env = s.page == Page::Lfo && s.params->lfo_mode > 0.5f;
+        g_.TextCentered(kSW / 2, kFootLine + 2, env ? "ENV" : kPageNames[int(s.page)], W, Gfx::kBig);
         int cur = 0, n = 1;
         if(s.page == Page::Grains)
         {
@@ -1480,6 +1616,11 @@ void Ui::DrawFooter(const UiState& s)
         {
             cur = s.fx_page & 3;
             n   = kNumFxPages;
+        }
+        else if(s.page == Page::Lfo) // 1/2 = LFO, 2/2 = ENV
+        {
+            cur = env ? 1 : 0;
+            n   = 2;
         }
         if(n > 1)
         {

@@ -20,6 +20,9 @@
 //   Hold FX + turn             : FX mixer from any page: CUTOFF, CHORUS MIX,
 //                                RES MIX, REVERB MIX (FX release then does
 //                                nothing)
+//   LFO                        : LFO page (the selected track's LFO);
+//                                LFO again: switches that track between
+//                                LFO and ENV (envelope follower)
 //   Hold an encoder + turn     : its second parameter, where it has one
 //                                (RESONATOR enc 2 = BRIGHT)
 //   SHIFT + T1 / T2 / T3       : mute / unmute that track
@@ -90,6 +93,7 @@ class Controls
         page_btn_[0].Init(update_rate, true, pins::kBtnLoop, INPUT_PULLUP);
         page_btn_[1].Init(update_rate, true, pins::kBtnGrains, INPUT_PULLUP);
         page_btn_[2].Init(update_rate, true, pins::kBtnFx, INPUT_PULLUP);
+        page_btn_[3].Init(update_rate, true, pins::kBtnLfo, INPUT_PULLUP);
         shift_.Init(update_rate, true, pins::kBtnShift, INPUT_PULLUP);
         track_[0].Init(update_rate, true, pins::kBtnTrack1, INPUT_PULLUP);
         track_[1].Init(update_rate, true, pins::kBtnTrack2, INPUT_PULLUP);
@@ -142,6 +146,20 @@ class Controls
             browser.Close();
         }
 
+        //    LFO acts on press. Pressed again on the LFO page: the selected
+        //    track switches between LFO and ENV (envelope follower).
+        if(page_btn_[int(Page::Lfo)].RisingEdge())
+        {
+            if(page_ == Page::Lfo && !browser.IsOpen())
+            {
+                Params& sp  = *params[selected_track_];
+                sp.lfo_mode = sp.lfo_mode > 0.5f ? 0.f : 1.f;
+            }
+            grain_size_mode_ = false;
+            page_            = Page::Lfo;
+            browser.Close();
+        }
+
         // 3. Track buttons: select → (on LOOP) open browser → close browser.
         //    SHIFT + track button: mute / unmute that track.
         for(int t = 0; t < kNumTracks; t++)
@@ -165,6 +183,7 @@ class Controls
 
         Params&   p    = *params[selected_track_];
         TapeLoop& tape = *tapes[selected_track_];
+        sel_params_    = &p;
 
         // 4. While the browser is open, the encoders drive it instead of the
         //    parameters: any turn moves, any push selects.
@@ -297,6 +316,7 @@ class Controls
         c.grains_alt = grain_size_mode_;
         c.shift      = shift_held_;
         c.fx_held    = fx_held_;
+        c.lfo_env    = sel_params_ && sel_params_->lfo_mode > 0.5f;
         for(int i = 0; i < 4; i++)
             if(enc_[i].Pressed())
                 c.held |= uint8_t(1u << i);
@@ -367,6 +387,7 @@ class Controls
     const ParamDesc* popup_  = nullptr;
     uint32_t       popup_ms_ = 0;
     bool           muted_[kNumTracks] = {};
+    const Params*  sel_params_ = nullptr; // selected track's params (LFO/ENV)
 };
 
 } // namespace gloop

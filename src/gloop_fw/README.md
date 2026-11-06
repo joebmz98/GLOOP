@@ -43,6 +43,7 @@ Open `gloop_fw/gloop_fw.ino` (the Arduino IDE needs the folder and the `.ino` to
 | REC / PLAY | D2 (pin 3) / D3 (pin 4) |
 | LOOP / GRAINS / FX | D4 / D5 / D6 (pins 5–7) |
 | SHIFT | D12 (pin 13) |
+| LFO | **D29 (pin 36)** |
 | Audio IN L / R | pin 16 / 17 (TRS tip / ring) |
 | Audio OUT L / R | pin 18 / 19 (TRS tip / ring) |
 | Jack sleeves | AGND (pin 20) |
@@ -61,6 +62,8 @@ D1–D6 are also the Seed's SD card pins: when SD loading is added, the buttons 
 | FX ▪ RESONATOR | Freq (note) | Structure · hold + turn: **Bright** | Decay | Mix |
 | FX ▪ REVERB | Size | Tone | Pre-delay | Mix |
 | **Hold FX** (any page) | Filter cutoff | Chorus mix | Resonator mix | Reverb mix |
+| LFO | Shape | Rate (0.05–10 Hz) | Depth (−100..+100%) | Destination |
+| LFO ▪ ENV (LFO again) | Source (T1 / T2 / T3 / IN) | Release (20 ms–2 s) | Depth (−100..+100%) | Destination |
 
 Everything acts on the **selected track** (T1, T2 or T3, shown in the header chip). The mode (**LOOP / GRAINS / FX**) is shown in the middle of the footer, and the page within it at the bottom right: GRAINS `1/2` / `2/2` (alt layer), FX `1/4`..`4/4` (FILTER, CHORUS, RESONATOR, REVERB).
 
@@ -93,6 +96,9 @@ The panel has rounded corners, so the header and footer keep 14 px (logical, 28 
 - **CHORUS:** RATE 0.05–10 Hz, DEPTH ±0.5–8 ms, WIDTH from mono (L and R sweep together) to widest (half a cycle apart), MIX 0 = off. The picture is a little choir: one silent singer at MIX 0 and up to eight singing at 100%; they stand further apart with WIDTH, sway more with DEPTH and sing in time with RATE.
 - **RESONATOR** (DaisySP's Rings-style modal resonator): FREQ is the note it rings at (C1–C7, e.g. `A2`); STRUCT 0–25% squeezed overtones, 25–30% harmonic (string / tube), above that stretched and inharmonic (bar, bell); DECAY from a dull knock to a ~30 s drone (DaisySP's "damping"; higher = rings longer); BRIGHT (hold encoder 2 + turn) from wood to glass; **MIX 0% = off** (the default, and then it costs no CPU). Its level is matched to the input automatically. The picture is a wine glass played with a wet finger: FREQ is the water level (more water = lower note), STRUCT morphs the glass from a narrow flute to a wide bowl, BRIGHT makes it shine, DECAY sets how many sound waves ripple out; the finger only circles the rim while MIX is up.
 - **REVERB:** SIZE (feedback), TONE (damping, 1–18 kHz: dark → bright), **PRE-DLY** (0–250 ms before the reverb starts, so the dry sound stays clear) and MIX (this track's send). SIZE, TONE and PRE-DLY are shared by all tracks (one reverb); MIX is per track. The picture is a cathedral nave: SIZE adds arches, TONE lets you see further down it, and the echo rings leave the singer after a gap set by PRE-DLY.
+- **LFO page** (LFO button, D29): one modulation source per track, which moves one parameter. **LFO** mode: SHAPE (SINE, TRI, SQUARE, SAW+, SAW-, S&H, DRIFT = smooth random), RATE 0.05–10 Hz, DEPTH, DEST. The LFO restarts when its track starts playing, so it lines up with the loop. **Press LFO again** to switch that track to **ENV**, an envelope follower: SOURCE is the track it listens to (T1, T2, T3, or the audio IN), measured after that track's FX and before its mute, so a muted track can still drive it; attack is ~3 ms and RELEASE sets how fast it falls; levels from −48 to −6 dBFS map to 0–100%. DEPTH and DEST are shared by the two modes. The footer shows LFO `1/2` or ENV `2/2`.
+- **Destinations:** PITCH (±12 st at full depth), VOLUME, GRAINS (±12), SPRAY, SPREAD, G.MIX, G.SIZE (±2 octaves), CUTOFF, RESO, DRIVE, CH.RATE, CH.DPTH, CH.WDTH, CH.MIX, RES.FRQ (±24 st), STRUCT, DECAY, BRIGHT, RES.MIX, REV.SZ, TONE, PRE-DLY, REV.MIX (filter TYPE isn't a destination: it's a switch). The LFO swings either side of where the knob is; the ENV pushes up from it (negative DEPTH: down). The knobs and readouts don't move; only the sound does. **VOLUME**: an LFO is a tremolo (negative DEPTH flips it); an ENV with positive DEPTH is a gate (quiet when the source is quiet), with negative DEPTH a **ducker / sidechain** (quiet when the source is loud). REV.SZ / TONE / PRE-DLY are shared, so every track's modulation of them adds up.
+- **LFO picture:** the shape drawn twice across the screen (dark = full size, white = scaled by DEPTH) with a dot at the current phase; S&H and DRIFT show a scrolling trace, and ENV shows the level scrolling, with the SOURCE chip top left. The top line says where it goes and how much.
 - **SHIFT + T1 / T2 / T3 mutes** that track (press again to unmute). It keeps playing silently, so it stays in sync; the fade is about 4 ms so there's no click. A muted track's header chip turns dark, and in the footer a muted track's name is struck through. Its reverb tail still rings out.
 - SHIFT + turn = fine adjust (or the alternate parameter where there is one). **SHIFT + push** resets that parameter to its default (a push on its own no longer resets, so hold + turn is safe).
 - Reverb **SIZE / TONE / PRE-DLY** and the **BPM** are shared by all tracks; every other parameter is per track.
@@ -129,6 +135,7 @@ Hold SHIFT to read the audio CPU load: **PK** (worst block in the last second) a
 | `grains.h` | Grain pool (12 voices), block-based renderer, spray/spread/envelope, CPU throttle |
 | `envelopes.h` | 10 grain window lookup tables + level compensation |
 | `fx.h` | Per-track filter (LP/HP/BP/COMB + drive), stereo chorus and modal resonator + one shared ReverbSc with pre-delay (idles when every MIX is 0) |
+| `modulation.h` | Per-track LFO / envelope follower and how each destination is modulated |
 | `controls.h` | Encoders/buttons → params, transport, track buttons, browser |
 | `browser.h` | Sample browser state + sample library (stand-in until SD) |
 | `params.h/.cpp` | Parameter struct, page map, value formatting |
