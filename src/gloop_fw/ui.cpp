@@ -43,8 +43,8 @@ static constexpr int kCellW     = 66;
 static constexpr int kFootLine  = 110;
 // The panel has rounded corners: keep the header and footer rows this far in
 // from the left and right edges so nothing is cut off
-static constexpr int kCornerL    = 7;
-static constexpr int kCornerR    = kSW - 8; // last usable column on the right
+static constexpr int kCornerL    = 14;
+static constexpr int kCornerR    = kSW - 15; // last usable column on the right
 
 static const char* const kPageNames[kNumPages] = {"LOOP", "GRAINS", "FX"};
 
@@ -114,7 +114,11 @@ void Ui::Draw(const UiState& s)
 void Ui::DrawHeader(const UiState& s)
 {
     DrawTrackChip(s);
-    g_.Text(kCornerL + 16, 2, kPageNames[int(s.page)], W, Gfx::kBig);
+    // (The mode name - LOOP / GRAINS / FX - is in the middle of the footer)
+
+    // MIDI in activity: a small dot right of the chip while bytes arrive
+    if(s.midi_rx)
+        g_.FillRect(kCornerL + 15, 8, 2, 2, (frame_ / 2) % 2 ? W : M);
 
     // Holding FX: the encoders are the FX mixer, whatever the page
     if(s.enc.fx_held)
@@ -133,7 +137,7 @@ void Ui::DrawHeader(const UiState& s)
         for(; *tail; tail++)
             bpm[k++] = *tail;
         bpm[k] = 0;
-        g_.Text(kCornerL + 44, 4, bpm, s.midi_sync ? L : (s.shift ? W : M), Gfx::kSmall);
+        g_.Text(kCornerL + 19, 4, bpm, s.midi_sync ? L : (s.shift ? W : M), Gfx::kSmall);
     }
 
     const TapeLoop& t  = *s.tape;
@@ -191,7 +195,7 @@ void Ui::DrawHeader(const UiState& s)
         if(waiting)
             for(int b = 0; b < 4; b++)
             {
-                const int  x   = 86 + b * 5;
+                const int  x   = 66 + b * 5;
                 const int  sz  = b == 0 ? 4 : 3;
                 const int  y   = b == 0 ? 3 : 4;
                 const bool cur = s.metro_active && b == s.metro_beat;
@@ -1414,53 +1418,32 @@ void Ui::DrawFooter(const UiState& s)
 {
     g_.HLine(0, kSW - 1, kFootLine, D);
 
-    // Bottom right: the pages within the current mode, the current one lit
-    //   LOOP   : MAIN (and a reminder that SHIFT has BPM / FREE length)
-    //   GRAINS : MAIN / ALT (GRAINS again)
-    //   FX     : FILT / CHOR / RESO / VERB (FX again / SHIFT + FX)
+    // Bottom middle: the mode (LOOP / GRAINS / FX). Bottom right: which
+    // page of it, e.g. "1/2" on GRAINS, "3/4" on FX (LOOP has one page).
     if(!s.shift)
     {
-        static const char* const kLoopTabs[1]   = {"MAIN"};
-        static const char* const kGrainsTabs[2] = {"MAIN", "ALT"};
-        static const char* const kFxTabs[4]     = {"FILT", "CHOR", "RESO", "VERB"};
-        const char* const*       tabs = kLoopTabs;
-        int                      n = 1, cur = 0;
+        g_.TextCentered(kSW / 2, kFootLine + 2, kPageNames[int(s.page)], W, Gfx::kBig);
+        int cur = 0, n = 1;
         if(s.page == Page::Grains)
         {
-            tabs = kGrainsTabs;
-            n    = 2;
-            cur  = s.grain_size_mode ? 1 : 0;
+            cur = s.grain_size_mode ? 1 : 0;
+            n   = 2;
         }
         else if(s.page == Page::Fx)
         {
-            tabs = kFxTabs;
-            n    = 4;
-            cur  = s.fx_page & 3;
+            cur = s.fx_page & 3;
+            n   = kNumFxPages;
         }
-        const int gap   = 6;
-        int       total = 0;
-        for(int i = 0; i < n; i++)
-            total += Gfx::TextWidth(tabs[i], Gfx::kSmall) + gap;
-        total -= gap;
-        int x = kCornerR - 1 - total;
-        if(s.page == Page::Loop)
-            g_.Text(x - 46, kFootLine + 3, "SHIFT:BPM", D, Gfx::kSmall);
-        for(int i = 0; i < n; i++)
+        if(n > 1)
         {
-            if(i == cur)
-                g_.Chip(x - 2, kFootLine + 1, tabs[i], Gfx::kSmall);
-            else
-                g_.Text(x, kFootLine + 3, tabs[i], M, Gfx::kSmall);
-            x += Gfx::TextWidth(tabs[i], Gfx::kSmall) + gap;
+            const char pg[4] = {char('1' + cur), '/', char('0' + n), 0};
+            g_.TextRight(kCornerR, kFootLine + 3, pg, cur > 0 ? W : M, Gfx::kSmall);
         }
     }
 
     // Hold SHIFT to see the audio CPU load: peak (last second) on the left,
     // average on the right. Inverted when the safety valve is limiting grains.
-    // Otherwise the bottom left shows what the other track is doing.
-    if(!s.shift)
-        DrawOtherTrack(s);
-    else
+    if(s.shift)
     {
         char buf[12];
         auto pct = [&buf](const char* tag, float v) {
@@ -1509,34 +1492,6 @@ void Ui::DrawTrackChip(const UiState& s)
     // Inset from the corner, one row down: the panel's corners are rounded
     g_.FillRect(kCornerL, 1, 13, 10, s.muted ? D : W);
     g_.Text(kCornerL + 1, 2, TrackName(s.track), s.muted ? L : B, Gfx::kBig);
-}
-
-// Footer, bottom left: what the OTHER tracks are doing, so you can see every
-// track at a glance (e.g. "T2" + play triangle, "T3" + stop square). A muted
-// track's name is dark with a line through it.
-void Ui::DrawOtherTrack(const UiState& s)
-{
-    const bool on = (frame_ / 8) % 2 == 0;
-    for(int k = 0; k < kNumTracks - 1; k++)
-    {
-        if(!s.others[k])
-            continue;
-        const TapeLoop& t = *s.others[k];
-        const int       x = kCornerL + k * 16, y = kFootLine + 3;
-        g_.Text(x, y, TrackName(s.other_id[k]), s.other_muted[k] ? D : M, Gfx::kSmall);
-        if(s.other_muted[k])
-            g_.HLine(x - 1, x + 7, y + 2, L); // struck through: muted
-        const int gx = x + 9, gy = y + 2;
-        if(t.IsRecording())
-            g_.FillCircle(gx + 2, gy, 2, on ? R : RD);
-        else if(t.IsArmed() || t.IsCountReady() || t.IsCounting())
-            g_.Circle(gx + 2, gy, 2, on ? R : RD);
-        else if(t.IsPlaying())
-            for(int i = 0; i < 3; i++)
-                g_.VLine(gx + i, gy - 2 + i, gy + 2 - i, L);
-        else if(t.HasLoop())
-            g_.FillRect(gx, gy - 2, 4, 4, M);
-    }
 }
 
 void Ui::DrawMask(const char* const* rows, int h, int x, int y, uint16_t c)
@@ -1760,13 +1715,13 @@ void Ui::DrawBrowserHints(const Browser& b)
     const char* actions[3] = {"MOVE", push, "EXIT"};
     int         total      = 0;
     for(int i = 0; i < 3; i++)
-        total += Gfx::TextWidth(keys[i], Gfx::kSmall) + Gfx::TextWidth(actions[i], Gfx::kSmall) + 4 + 10;
-    total -= 10;
+        total += Gfx::TextWidth(keys[i], Gfx::kSmall) + Gfx::TextWidth(actions[i], Gfx::kSmall) + 4 + 6;
+    total -= 6;
     int x = kSW / 2 - total / 2;
     for(int i = 0; i < 3; i++)
     {
         x = g_.Text(x, kFootLine + 3, keys[i], W, Gfx::kSmall) + 3;
-        x = g_.Text(x, kFootLine + 3, actions[i], M, Gfx::kSmall) + 10;
+        x = g_.Text(x, kFootLine + 3, actions[i], M, Gfx::kSmall) + 6;
     }
 }
 

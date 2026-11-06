@@ -62,9 +62,9 @@ D1–D6 are also the Seed's SD card pins: when SD loading is added, the buttons 
 | FX ▪ REVERB | Size | Tone | Pre-delay | Mix |
 | **Hold FX** (any page) | Filter cutoff | Chorus mix | Resonator mix | Reverb mix |
 
-Everything acts on the **selected track** (T1, T2 or T3, shown in the header chip). The footer's bottom-left shows what the other two tracks are doing (play triangle, stop square, red record dot); a muted one is struck through. The footer's bottom-right shows the pages of the current mode with the current one lit: LOOP `MAIN`, GRAINS `MAIN / ALT`, FX `FILT / CHOR / RESO / VERB`.
+Everything acts on the **selected track** (T1, T2 or T3, shown in the header chip). The mode (**LOOP / GRAINS / FX**) is shown in the middle of the footer, and the page within it at the bottom right: GRAINS `1/2` / `2/2` (alt layer), FX `1/4`..`4/4` (FILTER, CHORUS, RESONATOR, REVERB).
 
-The panel has rounded corners, so the header and footer keep 7 px (logical) clear of the left and right edges (`kCornerL` / `kCornerR` in `ui.cpp`).
+The panel has rounded corners, so the header and footer keep 14 px (logical, 28 physical) clear of the left and right edges (`kCornerL` / `kCornerR` in `ui.cpp`).
 
 - **T1 / T2 / T3:** first press selects that track; pressed again on LOOP opens the sample browser for it (turn any encoder to move, push to open / load).
 - **REC arms** the track: it waits for input and starts recording when the input crosses about -34 dBFS, keeping the 10 ms before the trigger so the first attack isn't lost. The screen shows ARM and a live input meter with the trigger level marked. REC again cancels.
@@ -77,7 +77,7 @@ The panel has rounded corners, so the header and footer keep 7 px (logical) clea
 - **PLAY is global:** it stops every track if any is playing, otherwise starts them all from their loop start points, in sync. If the selected track is recording, PLAY finishes the take instead.
 - **When a take finishes** (REC, PLAY or the 30 s limit): if another track is already playing, the new loop **joins in** straight away; if nothing was playing, every track with a loop starts together from its loop start.
 - **BPM:** SHIFT + START sets the tempo (40–240, shared by all tracks), shown next to LOOP in the header.
-- **MIDI clock in** (D14): while a MIDI clock is coming in, the BPM follows it (whole BPM; a new tempo is taken once it has held for a beat, so loop lengths don't re-cut through a tempo glide). The header shows e.g. `120 MIDI` instead of `120 BPM`. If the clock stops for half a second, GLOOP keeps that tempo and SHIFT + START works again.
+- **MIDI clock in** (D14): while a MIDI clock is coming in, the BPM follows it (whole BPM; a new tempo is taken once it has held for a beat, so loop lengths don't re-cut through a tempo glide). The header shows e.g. `120 MIDI` instead of `120 BPM`, and a small dot right of the track chip flickers whenever any MIDI bytes arrive (so you can tell the input circuit works even if the source isn't sending clock; many only send it while playing). Note: the port is opened on USART1's own alternate pins (`PB_7_ALT1`), because the core's default for D14 is a different UART (LPUART1). If the clock stops for half a second, GLOOP keeps that tempo and SHIFT + START works again.
 - **LENGTH** is counted in 8th notes at that BPM (shown as e.g. `6/8`, `16/8`), so loops stay in time when the BPM changes. A new take is fitted to the most whole 8ths it holds.
 - **SHIFT + LENGTH** frees the length from the grid (shown in seconds). Turning LENGTH again without SHIFT snaps it back onto the nearest 8th.
 - **GRAINS 0** is just the loop; **1–12** add that many grains alongside the loop. The cloud's level is matched to the loop automatically, so changing GRAINS / SPRAY / ENV / SIZE doesn't jump the volume.

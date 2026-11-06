@@ -2,7 +2,11 @@
 // midi_clock.h — follow the BPM of an external MIDI clock
 //
 // TRS MIDI in (through an optocoupler) arrives on D14 (pin 15), USART1 RX,
-// which the core opens as Serial1 at 31,250 baud. Only the real-time Timing
+// at 31,250 baud. Note: on the H750, PB7 (D14) belongs to two UARTs, and the
+// core's default pin entry for it is LPUART1, not USART1 — opening the port
+// by pin number (the core's Serial / Serial1) picks the wrong one. So the
+// port is created here from USART1's own pin entries: PB_7_ALT1 (RX, D14)
+// and PB_6_ALT2 (TX, D13). Only the real-time Timing
 // Clock byte (0xF8, 24 per quarter note) is used; everything else is ignored.
 //
 // Poll() runs in the audio callback (1 kHz), so each clock is time-stamped to
@@ -19,6 +23,12 @@
 
 namespace gloop
 {
+inline Uart& MidiUart()
+{
+    static Uart uart(PB_7_ALT1, PB_6_ALT2); // USART1: RX D14, TX D13
+    return uart;
+}
+
 class MidiClockIn
 {
   public:
@@ -27,15 +37,17 @@ class MidiClockIn
     void Init(float sample_rate)
     {
         sr_ = sample_rate;
-        Serial1.begin(31250);
+        MidiUart().begin(31250);
     }
 
     // Audio callback. now: samples since start (block start is fine)
     void Poll(uint32_t now)
     {
-        while(Serial1.available() > 0)
+        while(MidiUart().available() > 0)
         {
-            const int b = Serial1.read();
+            const int b = MidiUart().read();
+            last_byte_  = now; // any MIDI at all (activity dot on screen)
+            got_any_    = true;
             if(b != 0xF8)
                 continue; // only the timing clock matters here
             stamps_[w_] = now;
@@ -81,6 +93,9 @@ class MidiClockIn
     }
 
     bool  Active() const { return active_; }
+    // Any MIDI byte in the last 100 ms: shows the input circuit works even if
+    // the source isn't sending clock (many only send it while playing)
+    bool Activity(uint32_t now) const { return got_any_ && now - last_byte_ < uint32_t(0.1f * sr_); }
     float Bpm() const { return bpm_; }
 
   private:
@@ -89,6 +104,8 @@ class MidiClockIn
     int      w_      = 0;
     int      count_  = 0;
     uint32_t last_   = 0;
+    uint32_t last_byte_ = 0;
+    bool     got_any_   = false;
     bool     active_ = false;
     float    bpm_    = 120.f;
     float    pending_ = 0.f; // a new tempo waiting to prove it's steady

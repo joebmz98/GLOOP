@@ -32,6 +32,7 @@ struct UiState
     int               count_beats = 0;   // count-in: beats left (4..1)
     bool              in_time   = false; // another loop is playing (grid lock)
     bool              midi_sync = false; // BPM follows MIDI clock in
+    bool              midi_rx   = false; // MIDI bytes arriving (activity dot)
     int               grains_allowed = -1; // grains this track actually gets
                                            // from the shared pool (-1: n/a)
 
@@ -112,7 +113,6 @@ class Ui
     void DrawMask(const char* const* rows, int h, int x, int y, uint16_t c);
     void DrawLoading(const UiState& s);
     void DrawTrackChip(const UiState& s);
-    void DrawOtherTrack(const UiState& s);
 
     // Tiny envelope curve used in place of the shape's name
     void DrawEnvGlyph(int right, int y, int shape, int w, int h);

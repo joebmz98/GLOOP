@@ -614,6 +614,7 @@ void loop()
         s.throttled     = throttled || gov_scale < 0.99f;
         s.grains_allowed = grains_allowed[sel];
         s.midi_sync      = midi_clock.Active();
+        s.midi_rx        = midi_clock.Activity(sample_clock);
         {
             const float beat = 60.f / tr.params.bpm * sample_rate;
             const int32_t left = tr.count_left;
