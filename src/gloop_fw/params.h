@@ -33,7 +33,12 @@ struct Params
     float grain_size = 0.08f; // 0.01..0.5 s   (GRAINS alt layer, encoder 1)
     float grain_pitch = 0.f;  // -24..+24 semitones, grains only (alt, enc 3)
 
-    // FX pages (FX cycles them). Chain: filter → chorus → resonator → reverb
+    // FX: each track has two slots, each holding one effect (FxPage, or
+    // kFxNone). The signal goes slot 1 → slot 2; REVERB in either slot is the
+    // send to the shared reverb, taken at the end of the track. SHIFT + FX
+    // opens the slot menu; FX steps between the two slots' pages.
+    int fx[2] = {0, 3}; // default FILTER → REVERB
+    float none = 0.f;   // what an empty slot's encoders point at (no-op)
     // FILTER
     float cutoff       = 1.f;  // 0..1 → 40 Hz..18 kHz (exponential)
     float reso         = 0.f;  // 0..1
@@ -86,7 +91,7 @@ inline const char* TrackName(int t)
     return kNames[t < 0 ? 0 : (t > 2 ? 2 : t)];
 }
 
-// The FX page is four pages, one per effect (FX cycles, SHIFT + FX goes back)
+// The effects a slot can hold (Params::fx), plus kFxNone = an empty slot
 enum class FxPage : int
 {
     Filter    = 0,
@@ -95,7 +100,15 @@ enum class FxPage : int
     Reverb    = 3,
 };
 constexpr int kNumFxPages = 4;
-extern const char* const kFxPageNames[kNumFxPages];
+constexpr int kFxNone     = 4; // empty slot
+constexpr int kNumFxSlots = 2;
+extern const char* const kFxPageNames[kNumFxPages + 1]; // + "NONE"
+
+// Does this track have effect `e` in one of its slots?
+inline bool HasFx(const Params& p, FxPage e)
+{
+    return p.fx[0] == int(e) || p.fx[1] == int(e);
+}
 
 // How a value is printed on the screen
 enum class Format
@@ -115,6 +128,7 @@ enum class Format
     LfoShape,   // 0..6 → "SINE" .. "DRIFT"
     ModDest,    // ModDest index → "CUTOFF"
     EnvSource,  // 0..3 → "T1" / "T2" / "T3" / "IN"
+    Dash,       // an empty slot's encoders → blank
 };
 
 // Where a track's LFO / envelope follower goes (Params::lfo_dest)
@@ -152,11 +166,23 @@ struct ParamDesc
     Format        format;
 };
 
+// SHIFT + FX: the selected track's FX slot menu. Level 0 lists the two
+// slots; pushing an encoder on one opens level 1, the list of effects
+// (FILTER, CHORUS, RESONATOR, REVERB, NONE). Any encoder turns, any push picks.
+struct FxMenu
+{
+    bool open   = false;
+    int  level  = 0; // 0 = slots, 1 = effects for `slot`
+    int  cursor = 0; // highlighted row
+    int  slot   = 0; // the slot being changed (level 1)
+};
+
 // Everything that decides what an encoder edits right now
 struct EncoderContext
 {
     Page    page       = Page::Loop;
-    int     fx_page    = 0;     // FxPage on the FX page
+    int     fx_page    = 0;     // FX page: which slot (0 / 1)
+    int     fx[2]      = {0, 3}; // the selected track's slot effects
     bool    grains_alt = false; // GRAINS pressed again: alt layer
     bool    shift      = false; // SHIFT held
     uint8_t held       = 0;     // bit i: encoder i pushed in (hold + turn)
@@ -165,7 +191,8 @@ struct EncoderContext
 };
 
 // The parameter encoder `enc` edits in this context. Priority:
-//   FX held        → mixer: CUTOFF / CHORUS MIX / RES MIX / REVERB MIX
+//   FX held        → mixer: slot 1's first + last parameter (e.g. CUTOFF,
+//                    DRIVE), then slot 2's (e.g. SIZE, MIX)
 //   encoder held   → its hold-and-turn parameter, if it has one
 //   SHIFT          → its SHIFT parameter, if it has one (else fine adjust)
 //   GRAINS alt     → SIZE / G.PITCH / ENV

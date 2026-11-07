@@ -57,15 +57,17 @@ D1–D6 are also the Seed's SD card pins: when SD loading is added, the buttons 
 |---|---|---|---|---|
 | LOOP | Start · SHIFT: **BPM** | Length (8th notes) · SHIFT: **free length** | Pitch (±24 st) | Crossfade (0–1 s) |
 | GRAINS | Grains (0 = loop only, 1–12 = grains on top of the loop) · alt: **Size** | Spray | Spread · alt: **Grain pitch** (±24 st) | Mix (loop ↔ grains, default 50%) · alt: **Envelope** |
-| FX ▪ FILTER | Cutoff | Resonance | Type (LP / HP / BP / COMB) | Drive |
-| FX ▪ CHORUS | Rate | Depth | Width | Mix |
-| FX ▪ RESONATOR | Freq (note) | Structure · hold + turn: **Bright** | Decay | Mix |
-| FX ▪ REVERB | Size | Tone | Pre-delay | Mix |
-| **Hold FX** (any page) | Filter cutoff | Chorus mix | Resonator mix | Reverb mix |
+| FX ▪ slot 1 / slot 2 | the controls of the effect in that slot (below) | | | |
+| ↳ FILTER | Cutoff | Resonance | Type (LP / HP / BP / COMB) | Drive |
+| ↳ CHORUS | Rate | Depth | Width | Mix |
+| ↳ RESONATOR | Freq (note) | Structure · hold + turn: **Bright** | Decay | Mix |
+| ↳ REVERB | Size | Tone | Pre-delay | Mix |
+| **SHIFT + FX** | FX slot menu: any encoder turns, any encoder push selects | | | |
+| **Hold FX** (any page) | Slot 1's first control (e.g. Cutoff) | Slot 1's last (e.g. Drive / Mix) | Slot 2's first (e.g. Size) | Slot 2's last (e.g. Mix) |
 | LFO | Shape | Rate (0.05–10 Hz) | Depth (−100..+100%) | Destination |
 | LFO ▪ ENV (LFO again) | Source (T1 / T2 / T3 / IN) | Release (20 ms–2 s) | Depth (−100..+100%) | Destination |
 
-Everything acts on the **selected track** (T1, T2 or T3, shown in the header chip). The mode (**LOOP / GRAINS / FX**) is shown in the middle of the footer, and the page within it at the bottom right: GRAINS `1/2` / `2/2` (alt layer), FX `1/4`..`4/4` (FILTER, CHORUS, RESONATOR, REVERB).
+Everything acts on the **selected track** (T1, T2 or T3, shown in the header chip). The mode (**LOOP / GRAINS / FX**) is shown in the middle of the footer, and the page within it at the bottom right: GRAINS `1/2` / `2/2` (alt layer), FX `1/2` / `2/2` (slot 1, slot 2).
 
 The panel has rounded corners, so the header and footer keep 14 px (logical, 28 physical) clear of the left and right edges (`kCornerL` / `kCornerR` in `ui.cpp`).
 
@@ -87,8 +89,10 @@ The panel has rounded corners, so the header and footer keep 14 px (logical, 28 
 - **GRAINS 0** is just the loop; **1–12** add that many grains alongside the loop. The cloud's level is matched to the loop automatically, so changing GRAINS / SPRAY / ENV / SIZE doesn't jump the volume.
 - **MIX** (GRAINS encoder 4) balances the loop against the grains: 0% = loop only, 100% = grains only, **50% (default)** = both at -3 dB (an equal-power blend), which keeps the total about as loud as the loop on its own.
 - **Press GRAINS again** while on the GRAINS page for the **alt layer**: encoder 1 = grain **SIZE**, encoder 3 = grain **PITCH** (±24 semitones, the grains only; the loop keeps its own PITCH), encoder 4 = grain **ENVELOPE** (window shape). Their labels show inverted; press GRAINS again to go back.
-- **FX pages:** one effect per page. **FX** goes to the FX pages (at the one you used last); pressed again it steps **FILTER → CHORUS → RESONATOR → REVERB**, and **SHIFT + FX** steps back. The footer shows which. Per track the order is **Filter → Chorus → Resonator → Reverb**, and **MIX is always encoder 4**.
-- **Hold FX and turn** = the **FX mixer**, from any page, without leaving it: encoder 1 = filter cutoff, 2 = chorus mix, 3 = resonator mix, 4 = reverb mix. The header shows **FX MIX** and the readouts switch to the mixer while FX is held. (FX acts when you *release* it, so holding it to use the mixer doesn't change page.)
+- **FX slots:** each track has **two FX slots**, by default **FILTER → REVERB**. The sound goes through slot 1, then slot 2. **FX** goes to the FX pages (at the slot you used last); pressed again it switches to the other slot, and the footer shows `1/2` or `2/2`. Each slot's page is that effect's page (below), and **MIX is always encoder 4** (FILTER: DRIVE). Only the effects in a track's slots run, which keeps the CPU load in check.
+- **SHIFT + FX opens the FX slot menu** for the selected track: two rack units show what's in slot 1 and slot 2. **Turn any encoder** to highlight a slot and **push any encoder** to open its list of effects: **FILTER, CHORUS, RESONATOR, REVERB, NONE**. Turn to one and push to put it in the slot (the dot marks what's there now). Each effect can be in one slot per track: choosing the one that's in the other slot **swaps** them (the list says `SWAP 1` / `SWAP 2`). Choosing CHORUS, RESONATOR or REVERB while its MIX is at 0 sets a starting MIX (50% / 40% / 30%) so you hear it straight away. In the menu, **FX goes back** a level (from the slot list: out to that slot's page), **SHIFT + FX closes** it, and **T1 / T2 / T3** switch which track you're editing. A change of effects dips that track out and back in over ~8 ms, so there's no click. An empty slot's page says EMPTY.
+- **REVERB in a slot** is the track's send to the shared reverb (taken at the end of the track, after both slots); MIX is the send level. Without REVERB in a slot the track sends nothing. The LFO can still point at an effect that isn't in a slot; it just has nothing to move until you put it in one.
+- **Hold FX and turn** = the **FX mixer**, from any page, without leaving it: encoders 1 and 2 = slot 1's first and last control, encoders 3 and 4 = slot 2's (with the defaults: cutoff, drive, reverb size, reverb mix). The header shows **FX MIX** and the readouts switch to the mixer while FX is held. (FX acts when you *release* it, so holding it to use the mixer doesn't change page.)
 - **Hold an encoder in and turn it** for its second parameter, where it has one: on RESONATOR, encoder 2 = **BRIGHT** (also shown top right of the picture). Elsewhere hold + turn is the same as turning.
 - **Value popup:** while you turn an encoder, its name and value show large in the middle of the screen for about a second. Useful for the mixer and hold + turn, whose values aren't on the readouts.
 - **FILTER:** TYPE switches **LP / HP / BP / COMB** with a 5 ms crossfade. If the filter was wide open it stays open for the new type (e.g. HP moves CUTOFF to the bottom); SHIFT + push on CUTOFF resets it to the open position for the current type. **DRIVE** pushes the sound through a soft clip into the filter, with make-up gain so it gets grittier rather than louder (0 = clean). The picture: the response curve across the screen, shimmering with heat when driven, plus a small sine top right that squashes as DRIVE goes up.
@@ -117,9 +121,9 @@ SPI1's clock divides by powers of 2 (50 MHz → 25 or 12.5 MHz). For 40 MHz, set
 | Grain voices | 12 per track, but a **shared pool of 16** across all tracks: if the playing tracks ask for more, each gets a fair share (e.g. 12 + 12 → 8 + 8, shown as `8/12` on GRAINS) | `kGrainPool` (`gloop_fw.ino`) |
 | Loop length per track | 30 s (16-bit stereo, 5.8 MB; 17.3 MB of the 64 MB SDRAM for three) | `kMaxLoopSeconds` (`gloop_fw.ino`) |
 | Load governor | above 85% on any block (or 80% average) the grain pool and the resonators' modes shrink within ~15 ms (down to a quarter), and grow back over ~1.5 s once the average is under 65% | `gloop_fw.ino` |
-| CPU safety valve | also stops new grains above 80% avg / 90% peak, resumes below 70% | `gloop_fw.ino` |
+| CPU safety valve | an emergency brake: after a block above 95%, the next block starts no new grains (playing grains carry on). It used to stop **all** new grains while the average was above 70–80%, so a busy patch (e.g. adding a resonator to three tracks) made the grains go silent; sustained load is now left to the governor, which trims grain voices and resonator modes | `kThrottleHot` (`gloop_fw.ino`) |
 | CPU clock | **480 MHz** (the board default is 400) | `clock.cpp` (`kBoost480`) |
-| Per-track FX | run a block (48 samples) at a time: filter → chorus → resonator. The filter is GLOOP's own inline copy of DaisySP's SVF maths (no library call per sample); the resonator runs four modes side by side (~2.5× cheaper on the M7) | `fx.h` |
+| Per-track FX | two slots per track; only the slotted effects run, a block (48 samples) at a time. The filter is GLOOP's own inline copy of DaisySP's SVF maths (no library call per sample); the resonator runs four modes side by side (~2.5× cheaper on the M7) | `fx.h` |
 | Idle tracks | a stopped track's FX are skipped once they've been silent (below −120 dBFS) for 64 ms, so a stopped track costs almost nothing | `kQuietBlocks` (`gloop_fw.ino`) |
 | Output | soft limiter from 0.8 of full scale | `OutputLimit()` (`gloop_fw.ino`) |
 

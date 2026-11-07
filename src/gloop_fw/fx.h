@@ -88,8 +88,15 @@ class TrackFilter
     void Init(float sample_rate)
     {
         sr_        = sample_rate;
-        svf_       = StereoSvf();
         cutoff_hz_ = 18000.f;
+        Reset();
+    }
+
+    // Back to silence (when it's put into an FX slot)
+    void Reset()
+    {
+        svf_ = StereoSvf(); // (SetParams sets its coefficients every block)
+        xf_  = 1.f;
         ClearComb();
     }
 
@@ -354,6 +361,14 @@ class StereoChorus
     {
         for(int i = 0; i < n; i++)
             Process(l[i], r[i]);
+    }
+
+    // Back to silence (when it's put into an FX slot)
+    void Reset()
+    {
+        for(auto& ch : buf_)
+            for(auto& v : ch)
+                v = 0.f;
     }
 
     // Track idle (stopped and silent, see AudioCallback): the delay line

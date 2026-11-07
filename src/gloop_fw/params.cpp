@@ -32,7 +32,10 @@ static const ParamDesc kGrainsAlt[4] = {
     {"ENV", &Params::envelope, 0.f, 9.f, 1.f, 0.f, true, true, Format::EnvName},
 };
 
-const char* const kFxPageNames[kNumFxPages] = {"FILTER", "CHORUS", "RESONATOR", "REVERB"};
+const char* const kFxPageNames[kNumFxPages + 1] = {"FILTER", "CHORUS", "RESONATOR", "REVERB", "NONE"};
+
+// An empty slot: its encoders edit nothing
+static const ParamDesc kNoParam = {"", &Params::none, 0.f, 0.f, 1.f, 0.f, true, false, Format::Dash};
 
 // One effect per FX page. MIX is always encoder 4 (FILTER: DRIVE).
 static const ParamDesc kFxParams[kNumFxPages][4] = {
@@ -76,13 +79,19 @@ const char* const kModDestNames[kNumModDests] = {
     "RESO",   "DRIVE",   "CH.RATE", "CH.DPTH", "CH.WDTH", "CH.MIX", "RES.FRQ", "STRUCT",
     "DECAY",  "BRIGHT",  "RES.MIX", "REV.SZ",  "TONE",    "PRE-DLY", "REV.MIX"};
 
-// Hold the FX button and turn, from any page
-static const ParamDesc kFxMixer[4] = {
-    {"CUTOFF", &Params::cutoff, 0.f, 1.f, 0.01f, 1.f, false, false, Format::Hertz},
-    {"CH.MIX", &Params::chorus_mix, 0.f, 1.f, 0.01f, 0.f, false, false, Format::Percent},
-    {"RES.MIX", &Params::res_mix, 0.f, 1.f, 0.01f, 0.f, false, false, Format::Percent},
-    {"REV.MIX", &Params::rev_mix, 0.f, 1.f, 0.01f, 0.f, false, false, Format::Percent},
-};
+// The parameter encoder `enc` edits on the page of a slot holding `fx`
+static const ParamDesc& SlotParam(int fx, int enc)
+{
+    return fx >= 0 && fx < kNumFxPages ? kFxParams[fx][enc & 3] : kNoParam;
+}
+
+// Hold the FX button and turn, from any page: encoders 1 / 2 = slot 1's
+// first and last parameter (FILTER: CUTOFF / DRIVE, others: e.g. RATE / MIX),
+// encoders 3 / 4 = slot 2's
+static const ParamDesc& FxMixer(const EncoderContext& c, int enc)
+{
+    return SlotParam(c.fx[enc >> 1], (enc & 1) ? 3 : 0);
+}
 
 // Hold-and-turn (encoder pushed in while turning)
 static const ParamDesc kResBright
@@ -90,7 +99,7 @@ static const ParamDesc kResBright
 
 static const ParamDesc* HoldParam(const EncoderContext& c, int enc)
 {
-    if(c.page == Page::Fx && c.fx_page == int(FxPage::Resonator) && enc == 1)
+    if(c.page == Page::Fx && c.fx[c.fx_page & 1] == int(FxPage::Resonator) && enc == 1)
         return &kResBright;
     return nullptr;
 }
@@ -114,7 +123,7 @@ const ParamDesc& EncoderParam(const EncoderContext& c, int enc, bool* is_alt)
 {
     const ParamDesc* alt = nullptr;
     if(c.fx_held)
-        alt = &kFxMixer[enc];
+        alt = &FxMixer(c, enc);
     else if((c.held >> enc) & 1)
         alt = HoldParam(c, enc);
     if(!alt && !c.fx_held && c.shift)
@@ -130,7 +139,7 @@ const ParamDesc& EncoderParam(const EncoderContext& c, int enc, bool* is_alt)
         case Page::Loop: return kLoopParams[enc];
         case Page::Grains: return kGrainsParams[enc];
         case Page::Lfo: return c.lfo_env ? kEnvParams[enc] : kLfoParams[enc];
-        default: return kFxParams[c.fx_page & 3][enc];
+        default: return SlotParam(c.fx[c.fx_page & 1], enc);
     }
 }
 
@@ -244,6 +253,7 @@ void FormatValue(const ParamDesc& d,
             Append(out, p, n, kTypes[i < 0 ? 0 : (i > 3 ? 3 : i)]);
             break;
         }
+        case Format::Dash: break; // blank
         case Format::LfoShape:
         {
             const int i = (int)lroundf(v);

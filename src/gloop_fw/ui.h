@@ -49,7 +49,8 @@ struct UiState
     int             metro_beat    = 0;     // 0..3 within the bar
     bool            grain_size_mode = false; // GRAINS pressed twice: alt layer
     EncoderContext  enc;                     // what each encoder edits now
-    int             fx_page      = 0;        // FxPage on the FX page
+    int             fx_page      = 0;        // FX page: which slot (0 / 1)
+    FxMenu          fx_menu;                 // SHIFT + FX slot menu
     const ParamDesc* popup       = nullptr;  // last parameter turned
     uint32_t        popup_age_ms = 100000;   // ...and how long ago
     bool            muted        = false; // selected track muted
@@ -79,6 +80,9 @@ class Ui
     void DrawGrains(const UiState& s);
     void DrawFx(const UiState& s);
     void DrawLfo(const UiState& s);
+    void DrawFxEmpty(const UiState& s);
+    void DrawFxMenu(const UiState& s);
+    void DrawFxIcon(int fx, int x, int y, uint16_t c);
     void DrawReadouts(const UiState& s);
     void DrawPopup(const UiState& s);
     void DrawFooter(const UiState& s);

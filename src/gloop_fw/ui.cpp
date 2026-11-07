@@ -94,6 +94,12 @@ void Ui::Draw(const UiState& s)
         return;
     }
     DrawHeader(s);
+    if(s.fx_menu.open)
+    {
+        DrawFxMenu(s); // the slot menu takes over the body and readouts
+        DrawFooter(s);
+        return;
+    }
     g_.SetClip(0, kBodyTop - 1, kSW - 1, kBodyBot);
     switch(s.page)
     {
@@ -1326,13 +1332,123 @@ static void DrawFxReverb(Gfx& g, const UiState& s, uint32_t frame)
 
 void Ui::DrawFx(const UiState& s)
 {
-    switch(FxPage(s.fx_page & 3))
+    switch(FxPage(s.params->fx[s.fx_page & 1]))
     {
         case FxPage::Filter: DrawFxFilter(g_, s, frame_); break;
         case FxPage::Chorus: DrawFxChorus(g_, s, frame_); break;
         case FxPage::Resonator: DrawFxResonator(g_, s, frame_); break;
         case FxPage::Reverb: DrawFxReverb(g_, s, frame_); break;
+        default: DrawFxEmpty(s); break;
     }
+}
+
+// =============================================================================
+// FX slots
+// =============================================================================
+// 9 x 8 pixel-art icons, one per effect (and NONE)
+static const char* const kFxIcons[kNumFxPages + 1][8] = {
+    {"#####....", "#####....", ".....#...", "......#..", ".......#.", ".......#.", "........#", "........#"}, // filter: LP curve
+    {"..#######", "..#######", "..#....#.", "..#....#.", "..#....#.", "###..###.", "###..###.", "........."}, // chorus: notes
+    {"#########", "#.......#", ".#.....#.", "..#...#..", "...###...", "....#....", "....#....", "..#####.."}, // resonator: glass
+    {"..#####..", ".#.....#.", "#..###..#", "#.#...#.#", "#.#...#.#", "#.#...#.#", "#.#...#.#", "#.#...#.#"}, // reverb: arches
+    {".........", "..#####..", ".#.....#.", "#.....#.#", "#....#..#", "#...#...#", ".##.....#", "..#####.."}, // none: empty
+};
+
+void Ui::DrawFxIcon(int fx, int x, int y, uint16_t c)
+{
+    fx = fx < 0 ? 0 : (fx > kFxNone ? kFxNone : fx);
+    DrawMask(kFxIcons[fx], 8, x, y, c);
+}
+
+// An FX page whose slot is empty
+void Ui::DrawFxEmpty(const UiState& s)
+{
+    g_.Chip(1, 13, s.fx_page & 1 ? "SLOT 2" : "SLOT 1", Gfx::kSmall);
+    // An empty rack space: dotted outline, two screw holes
+    const int x0 = 30, x1 = 109, y0 = 34, y1 = 62;
+    g_.HLine(x0, x1, y0, M, true);
+    g_.HLine(x0, x1, y1, M, true);
+    g_.VLine(x0, y0, y1, M, true);
+    g_.VLine(x1, y0, y1, M, true);
+    g_.FillCircle(x0 + 5, (y0 + y1) / 2, 1, D);
+    g_.FillCircle(x1 - 5, (y0 + y1) / 2, 1, D);
+    g_.TextCentered(kSW / 2, 45, "EMPTY", L, Gfx::kBig);
+    g_.TextCentered(kSW / 2, 70, "SHIFT + FX TO CHOOSE", M, Gfx::kSmall);
+}
+
+// SHIFT + FX: the selected track's two slots, or the effects for one slot
+void Ui::DrawFxMenu(const UiState& s)
+{
+    const FxMenu& m = s.fx_menu;
+    const Params& p = *s.params;
+    g_.HLine(0, kSW - 1, kReadLine, D);
+
+    if(m.level == 0)
+    {
+        // The chain: IN → [ 1 FILTER ] → [ 2 REVERB ] → OUT, as two rack units
+        g_.Chip(1, 13, "FX SLOTS", Gfx::kSmall);
+        g_.TextRight(kSW - 2, 15, "SIGNAL FLOWS DOWN", D, Gfx::kSmall);
+        for(int k = 0; k < kNumFxSlots; k++)
+        {
+            const bool sel = m.cursor == k;
+            const int  y   = 26 + k * 28, x0 = 8, w = 124, hgt = 21;
+            const uint16_t fg = sel ? B : W;
+            if(sel)
+                g_.FillRect(x0, y, w, hgt, W);
+            else
+                g_.Rect(x0, y, w, hgt, M);
+            // rack ears with screws
+            g_.FillCircle(x0 + 4, y + 4, 1, sel ? B : D);
+            g_.FillCircle(x0 + 4, y + hgt - 5, 1, sel ? B : D);
+            g_.FillCircle(x0 + w - 5, y + 4, 1, sel ? B : D);
+            g_.FillCircle(x0 + w - 5, y + hgt - 5, 1, sel ? B : D);
+            char num[2] = {char('1' + k), 0};
+            g_.Text(x0 + 10, y + 7, num, sel ? B : L, Gfx::kBig);
+            g_.VLine(x0 + 18, y + 3, y + hgt - 4, sel ? M : D);
+            DrawFxIcon(p.fx[k], x0 + 24, y + 6, fg);
+            g_.Text(x0 + 38, y + 7, kFxPageNames[p.fx[k] < 0 || p.fx[k] > kFxNone ? kFxNone : p.fx[k]],
+                    p.fx[k] == kFxNone && !sel ? M : fg, Gfx::kBig);
+        }
+        // signal arrows: in, between, out
+        const int ax = kSW / 2;
+        g_.VLine(ax, 22, 25, M);
+        g_.VLine(ax, 48, 53, M);
+        g_.Line(ax - 2, 51, ax, 53, M);
+        g_.Line(ax + 2, 51, ax, 53, M);
+        g_.VLine(ax, 76, 80, M);
+        g_.Line(ax - 2, 78, ax, 80, M);
+        g_.Line(ax + 2, 78, ax, 80, M);
+        g_.Text(2, kReadTop + 1, "TURN", L, Gfx::kSmall);
+        g_.Text(22, kReadTop + 1, "PICK A SLOT", M, Gfx::kSmall);
+        g_.Text(2, kReadTop + 12, "PUSH", L, Gfx::kSmall);
+        g_.Text(22, kReadTop + 12, "CHOOSE ITS EFFECT", M, Gfx::kSmall);
+        g_.TextRight(kSW - 2, kReadTop + 1, "FX: DONE", M, Gfx::kSmall);
+        return;
+    }
+
+    // Effects for one slot
+    g_.Chip(1, 13, m.slot ? "SLOT 2" : "SLOT 1", Gfx::kSmall);
+    const int other = p.fx[m.slot ^ 1];
+    const int top = 23, rowh = 12, x0 = 6, w = 128;
+    for(int e = 0; e <= kFxNone; e++)
+    {
+        const bool sel = m.cursor == e;
+        const int  y   = top + e * rowh;
+        if(sel)
+            g_.FillRect(x0, y, w, rowh - 1, W);
+        const uint16_t fg = sel ? B : (e == kFxNone ? M : W);
+        DrawFxIcon(e, x0 + 3, y + 2, fg);
+        g_.Text(x0 + 16, y + 2, kFxPageNames[e], fg, Gfx::kBig);
+        if(p.fx[m.slot] == e) // what's in this slot now
+            g_.FillCircle(x0 + w - 6, y + 5, 2, sel ? B : L);
+        else if(e != kFxNone && other == e) // in the other slot: they'll swap
+            g_.TextRight(x0 + w - 3, y + 3, m.slot ? "SWAP 1" : "SWAP 2", sel ? D : M, Gfx::kSmall);
+        else if(!sel)
+            g_.HLine(x0 + 16, x0 + w - 3, y + rowh - 1, D, true);
+    }
+    g_.Text(2, kReadTop + 12, "PUSH", L, Gfx::kSmall);
+    g_.Text(22, kReadTop + 12, "SELECT", M, Gfx::kSmall);
+    g_.TextRight(kSW - 2, kReadTop + 12, "FX: BACK", M, Gfx::kSmall);
 }
 
 // =============================================================================
@@ -1589,6 +1705,8 @@ static EncoderContext ContextOf(const UiState& s)
     c.grains_alt     = s.grain_size_mode;
     c.shift          = s.shift;
     c.lfo_env        = s.params->lfo_mode > 0.5f;
+    for(int k = 0; k < kNumFxSlots; k++)
+        c.fx[k] = s.params->fx[k];
     return c;
 }
 
@@ -1616,7 +1734,7 @@ static void ValueText(const UiState& s, const ParamDesc& d, char* buf, size_t n)
 // that aren't on the readouts (hold + turn, the FX mixer).
 void Ui::DrawPopup(const UiState& s)
 {
-    if(!s.popup || s.popup_age_ms > 1100)
+    if(!s.popup || s.popup_age_ms > 1100 || !s.popup->label[0]) // (empty slot)
         return;
     const ParamDesc& d = *s.popup;
     const int x = 24, y = 30, w = 92, h = 36;
@@ -1699,7 +1817,8 @@ void Ui::DrawFooter(const UiState& s)
     if(!s.shift)
     {
         const bool env = s.page == Page::Lfo && s.params->lfo_mode > 0.5f;
-        g_.TextCentered(kSW / 2, kFootLine + 2, env ? "ENV" : kPageNames[int(s.page)], W, Gfx::kBig);
+        const char* title = s.fx_menu.open ? "FX SLOTS" : (env ? "ENV" : kPageNames[int(s.page)]);
+        g_.TextCentered(kSW / 2, kFootLine + 2, title, W, Gfx::kBig);
         int cur = 0, n = 1;
         if(s.page == Page::Grains)
         {
@@ -1708,15 +1827,15 @@ void Ui::DrawFooter(const UiState& s)
         }
         else if(s.page == Page::Fx)
         {
-            cur = s.fx_page & 3;
-            n   = kNumFxPages;
+            cur = s.fx_page & 1; // slot 1/2
+            n   = kNumFxSlots;
         }
         else if(s.page == Page::Lfo) // 1/2 = LFO, 2/2 = ENV
         {
             cur = env ? 1 : 0;
             n   = 2;
         }
-        if(n > 1)
+        if(n > 1 && !s.fx_menu.open)
         {
             const char pg[4] = {char('1' + cur), '/', char('0' + n), 0};
             g_.TextRight(kCornerR, kFootLine + 3, pg, cur > 0 ? W : M, Gfx::kSmall);

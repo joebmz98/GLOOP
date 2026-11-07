@@ -97,6 +97,12 @@ struct Track
     float       sig_r[kMaxBlock];
     int         quiet_blocks = 0;    // stopped and silent for this many blocks
 
+    // FX slots in use (Params::fx is what's asked for). A change dips the
+    // track out and back in (~4 ms each way) around the swap, so no click.
+    int   fx_cur[kNumFxSlots] = {int(FxPage::Filter), int(FxPage::Reverb)};
+    float fx_gain = 1.f, fx_gain_prev = 1.f;
+    float send    = 0.f; // reverb send this block (0 unless REVERB is slotted)
+
     // Grain level matching (see "Level match" in AudioCallback)
     float ref_ms   = 0.f; // smoothed mean-square of the plain loop at the head
     float grain_ms = 0.f; // smoothed mean-square of the raw grain output
@@ -107,6 +113,23 @@ struct Track
     float loop_g = 1.f, loop_g_prev = 1.f;
     float grain_g = 0.f, grain_g_prev = 0.f;
 };
+
+static inline bool Slotted(const Track& tr, FxPage e)
+{
+    return tr.fx_cur[0] == int(e) || tr.fx_cur[1] == int(e);
+}
+
+// Put the asked-for effects into the slots. Effects that weren't running
+// start from silence (the resonator clears itself when its MIX is gated off).
+static void ApplyFxSlots(Track& tr)
+{
+    if(!Slotted(tr, FxPage::Filter) && HasFx(tr.params, FxPage::Filter))
+        tr.filter.Reset();
+    if(!Slotted(tr, FxPage::Chorus) && HasFx(tr.params, FxPage::Chorus))
+        tr.chorus.Reset();
+    for(int k = 0; k < kNumFxSlots; k++)
+        tr.fx_cur[k] = tr.params.fx[k];
+}
 
 // Length of one 8th note in samples
 static inline float EighthSamples(float bpm, float sr)
@@ -150,13 +173,14 @@ static int         fps_count     = 0;
 static int         fps_shown     = 0;
 
 // ---- CPU safety valve ----------------------------------------------------------
-// If the audio callback gets close to its time budget, stop starting new grains
-// until it drops back. Playing grains finish naturally, so this sounds like the
-// cloud thinning slightly, never like a click. Two thresholds (hysteresis) stop
-// it flickering on and off.
-static constexpr float kThrottleOn  = 0.80f; // average load to start limiting
-static constexpr float kThrottleHot = 0.90f; // or any single block above this
-static constexpr float kThrottleOff = 0.70f; // average load to stop limiting
+// An emergency brake only: if the last block came close to overrunning, the
+// next block starts no new grains (playing grains carry on). It used to latch
+// on while the AVERAGE load was high, which stopped every new grain until the
+// load fell below 70%: with a busy patch (e.g. a resonator on top of three
+// tracks) the grains simply went silent. Sustained load is the governor's job
+// (below): it trims grain voices and resonator modes instead.
+static constexpr float kThrottleOn  = 0.80f; // average load: governor shrinks
+static constexpr float kThrottleHot = 0.95f; // a block above this: brake
 static volatile bool   throttled    = false;
 
 // ---- Shared grain pool + load governor -----------------------------------------
@@ -201,10 +225,7 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
         size = kMaxBlock;
 
     // ---- 0. CPU safety valve (uses the previous block's measurement) ----
-    if(!throttled && (cpu.Avg() > kThrottleOn || cpu.Last() > kThrottleHot))
-        throttled = true;
-    else if(throttled && cpu.Avg() < kThrottleOff)
-        throttled = false;
+    throttled = cpu.Last() > kThrottleHot; // this block only
     if(cpu.Last() > kGovHot || cpu.Avg() > kThrottleOn)
         gov_scale = fmaxf(0.25f, gov_scale - 0.05f);
     else if(cpu.Avg() < kGovCalm)
@@ -352,11 +373,27 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
         grains_allowed[t] = playing[t] ? allow[t] : count;
         tr.cloud.SetParams(playing[t] ? allow[t] : count, p.grain_size, p.spray, p.spread, int(p.envelope + 0.5f), rate,
                            powf(2.f, p.grain_pitch / 12.f)); // grains-only pitch
+        // FX slots: a change fades the track out, swaps, fades back in
+        tr.fx_gain_prev = tr.fx_gain;
+        if(tr.params.fx[0] != tr.fx_cur[0] || tr.params.fx[1] != tr.fx_cur[1])
+        {
+            if(tr.fx_gain > 0.f)
+                tr.fx_gain = fmaxf(0.f, tr.fx_gain - 0.25f);
+            else
+                ApplyFxSlots(tr);
+        }
+        else
+            tr.fx_gain = fminf(1.f, tr.fx_gain + 0.25f);
+
+        // Only the slotted effects run (an unslotted resonator's MIX is gated
+        // to 0, which switches it off and clears it)
         tr.filter.SetParams(p.cutoff, p.reso, p.filter_type, p.filter_drive);
         tr.chorus.SetParams(p.chorus_rate, p.chorus_depth, p.chorus_width, p.chorus_mix);
         tr.res.SetMaxModes(res_modes < 6 ? 6 : res_modes);
-        tr.res.SetParams(p.res_note, p.res_bright, p.res_struct, p.res_decay, p.res_mix);
-        any_send |= p.rev_mix > 0.0005f;
+        tr.res.SetParams(p.res_note, p.res_bright, p.res_struct, p.res_decay,
+                         Slotted(tr, FxPage::Resonator) ? p.res_mix : 0.f);
+        tr.send = Slotted(tr, FxPage::Reverb) ? p.rev_mix : 0.f;
+        any_send |= tr.send > 0.0005f;
 
         // MIX: equal-power balance between the loop and the grains. At 50%
         // each is at 71% (-3 dB), which keeps the total as loud as the loop
@@ -528,8 +565,8 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
         }
     }
 
-    // ---- 4b. Per-track FX chain, a block at a time: filter → chorus →
-    // resonator. A track that's stopped and has been silent for a while
+    // ---- 4b. Per-track FX, a block at a time: the two slots in order.
+    // A track that's stopped and has been silent for a while
     // (its FX tails have died away) is skipped: silence in, silence out.
     const int n = int(size);
     for(int t = 0; t < kNumTracks; t++)
@@ -540,9 +577,14 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
             tr.chorus.Skip(n); // keeps the UI's choir moving
             continue;          // sig_l / sig_r are already silent
         }
-        tr.filter.ProcessBlock(tr.sig_l, tr.sig_r, n);
-        tr.chorus.ProcessBlock(tr.sig_l, tr.sig_r, n);
-        tr.res.ProcessBlock(tr.sig_l, tr.sig_r, n);
+        for(int k = 0; k < kNumFxSlots; k++) // slot 1 → slot 2
+            switch(FxPage(tr.fx_cur[k]))
+            {
+                case FxPage::Filter: tr.filter.ProcessBlock(tr.sig_l, tr.sig_r, n); break;
+                case FxPage::Chorus: tr.chorus.ProcessBlock(tr.sig_l, tr.sig_r, n); break;
+                case FxPage::Resonator: tr.res.ProcessBlock(tr.sig_l, tr.sig_r, n); break;
+                default: break; // REVERB is the send (below); NONE: nothing
+            }
         // Level for the envelope followers (before the mute, so a muted
         // track can still drive another track's ENV)
         float pk = 0.f;
@@ -567,12 +609,13 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
             // running underneath so it comes back in time. VOLUME
             // modulation ramps across the block.
             tr.mute_gain += 0.005f * ((controls.muted(t) ? 0.f : 1.f) - tr.mute_gain);
-            const float vg = tr.mute_gain
-                             * (tr.vol_prev + (tr.vol - tr.vol_prev) * float(i + 1) * inv_size);
+            const float k  = float(i + 1) * inv_size;
+            const float vg = tr.mute_gain * (tr.vol_prev + (tr.vol - tr.vol_prev) * k)
+                             * (tr.fx_gain_prev + (tr.fx_gain - tr.fx_gain_prev) * k);
             l *= vg;
             r *= vg;
 
-            const float send = tr.live.rev_mix;
+            const float send = tr.send;
             mix_l += l * (1.f - send);
             mix_r += r * (1.f - send);
             send_l += l * send;
@@ -728,6 +771,7 @@ void loop()
         s.grain_size_mode = controls.grain_size_mode();
         s.enc          = controls.Context(); // what each encoder edits now
         s.fx_page      = controls.fx_page();
+        s.fx_menu      = controls.fx_menu();
         s.popup        = controls.popup();
         s.popup_age_ms = controls.popup_age_ms();
         s.muted         = controls.muted(sel);

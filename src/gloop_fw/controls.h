@@ -14,12 +14,15 @@
 //   GRAINS again (on GRAINS)   : alt layer on/off: encoder 1 = grain SIZE,
 //                                encoder 3 = grain PITCH, encoder 4 =
 //                                ENVELOPE (labels inverted)
-//   FX (on release)            : FX pages, one effect each: FILTER → CHORUS
-//                                → RESONATOR → REVERB (FX again = next,
-//                                SHIFT + FX = previous)
-//   Hold FX + turn             : FX mixer from any page: CUTOFF, CHORUS MIX,
-//                                RES MIX, REVERB MIX (FX release then does
-//                                nothing)
+//   FX (on release)            : the selected track's FX slot pages: slot 1
+//                                and slot 2 (FX again = the other slot)
+//   SHIFT + FX                 : FX slot menu: turn any encoder to pick slot
+//                                1 or 2, push to open its effect list (FILTER,
+//                                CHORUS, RESONATOR, REVERB, NONE), turn and
+//                                push to choose. FX = back; SHIFT + FX = close
+//   Hold FX + turn             : FX mixer from any page: slot 1's first and
+//                                last parameter, then slot 2's (FX release
+//                                then does nothing)
 //   LFO                        : LFO page (the selected track's LFO);
 //                                LFO again: switches that track between
 //                                LFO and ENV (envelope follower)
@@ -128,19 +131,43 @@ class Controls
                     grain_size_mode_ = false;
                 page_ = Page(i);
                 browser.Close();
+                menu_.open = false;
             }
         //    FX acts on RELEASE, because holding it and turning an encoder is
         //    the FX mixer: if an encoder moved while it was held, the release
-        //    does nothing. Otherwise: go to FX (at the last FX page), or if
-        //    already there, the next effect (SHIFT + FX: the previous one).
+        //    does nothing. Otherwise: go to FX (at the last slot), or if
+        //    already there, the other slot. SHIFT + FX opens / closes the slot
+        //    menu; in the menu, FX goes back a level (and from the slot list,
+        //    out to that slot's page).
         daisy::Switch& fx = page_btn_[int(Page::Fx)];
         if(fx.RisingEdge())
             fx_used_ = false;
-        fx_held_ = fx.Pressed() && !browser.IsOpen();
+        fx_held_ = fx.Pressed() && !browser.IsOpen() && !menu_.open;
         if(fx.FallingEdge() && !fx_used_)
         {
-            if(page_ == Page::Fx && !browser.IsOpen())
-                fx_page_ = (fx_page_ + (shift_held_ ? kNumFxPages - 1 : 1)) % kNumFxPages;
+            if(shift_held_)
+            {
+                if(menu_.open)
+                    menu_.open = false;
+                else
+                {
+                    menu_.open   = true;
+                    menu_.level  = 0;
+                    menu_.cursor = fx_page_;
+                }
+            }
+            else if(menu_.open && menu_.level == 1)
+            {
+                menu_.level  = 0; // back to the slot list
+                menu_.cursor = menu_.slot;
+            }
+            else if(menu_.open)
+            {
+                menu_.open = false; // out to the highlighted slot's page
+                fx_page_   = menu_.cursor;
+            }
+            else if(page_ == Page::Fx && !browser.IsOpen())
+                fx_page_ ^= 1;
             grain_size_mode_ = false;
             page_            = Page::Fx;
             browser.Close();
@@ -158,6 +185,7 @@ class Controls
             grain_size_mode_ = false;
             page_            = Page::Lfo;
             browser.Close();
+            menu_.open = false;
         }
 
         // 3. Track buttons: select → (on LOOP) open browser → close browser.
@@ -169,6 +197,11 @@ class Controls
             if(shift_held_)
             {
                 muted_[t] = !muted_[t];
+                continue;
+            }
+            if(menu_.open) // the menu stays open, now for that track
+            {
+                selected_track_ = t;
                 continue;
             }
             if(browser.IsOpen())
@@ -199,6 +232,36 @@ class Controls
             browser.Turn(steps, shift_held_);
             if(pushed)
                 browser.Push();
+            Transport(tape, tapes);
+            return;
+        }
+
+        //    The FX slot menu works the same way
+        if(menu_.open)
+        {
+            int  steps  = 0;
+            bool pushed = false;
+            for(auto& e : enc_)
+            {
+                steps += e.Increment();
+                pushed |= e.RisingEdge();
+            }
+            const int rows = menu_.level == 0 ? kNumFxSlots : kNumFxPages + 1;
+            if(steps != 0)
+                menu_.cursor = ((menu_.cursor + steps) % rows + rows) % rows;
+            if(pushed && menu_.level == 0)
+            {
+                menu_.slot   = menu_.cursor;
+                menu_.level  = 1;
+                menu_.cursor = p.fx[menu_.slot];
+            }
+            else if(pushed)
+            {
+                AssignFx(p, menu_.slot, menu_.cursor);
+                fx_page_     = menu_.slot;
+                menu_.level  = 0;
+                menu_.cursor = menu_.slot;
+            }
             Transport(tape, tapes);
             return;
         }
@@ -305,6 +368,7 @@ class Controls
     bool metronome_on() const { return metronome_on_; }
     bool grain_size_mode() const { return grain_size_mode_; } // GRAINS alt layer
     int  fx_page() const { return fx_page_; }
+    const FxMenu& fx_menu() const { return menu_; }
     bool fx_held() const { return fx_held_; }
 
     // What the encoders edit right now (the UI shows the same thing)
@@ -317,6 +381,9 @@ class Controls
         c.shift      = shift_held_;
         c.fx_held    = fx_held_;
         c.lfo_env    = sel_params_ && sel_params_->lfo_mode > 0.5f;
+        if(sel_params_)
+            for(int k = 0; k < kNumFxSlots; k++)
+                c.fx[k] = sel_params_->fx[k];
         for(int i = 0; i < 4; i++)
             if(enc_[i].Pressed())
                 c.held |= uint8_t(1u << i);
@@ -332,6 +399,33 @@ class Controls
     float Eighth(float bpm) const { return 60.f / bpm * 0.5f * sr_; }
 
   private:
+    // Put effect e into a slot. If the other slot already has it, the two
+    // swap (each effect exists once per track). An effect whose MIX is at 0
+    // gets a starting MIX, so choosing it is heard straight away.
+    static void AssignFx(Params& p, int slot, int e)
+    {
+        const int other = slot ^ 1;
+        if(e != kFxNone && p.fx[other] == e)
+            p.fx[other] = p.fx[slot];
+        p.fx[slot] = e;
+        switch(FxPage(e))
+        {
+            case FxPage::Chorus:
+                if(p.chorus_mix < 0.01f)
+                    p.chorus_mix = 0.5f;
+                break;
+            case FxPage::Resonator:
+                if(p.res_mix < 0.01f)
+                    p.res_mix = 0.4f;
+                break;
+            case FxPage::Reverb:
+                if(p.rev_mix < 0.01f)
+                    p.rev_mix = 0.3f;
+                break;
+            default: break;
+        }
+    }
+
     // REC acts on the selected track; PLAY on both. Works with the browser
     // open too.
     void Transport(TapeLoop& tape, TapeLoop* const* tapes)
@@ -380,7 +474,8 @@ class Controls
     float          sr_             = 48000.f;
     bool           metronome_on_   = true;
     bool           grain_size_mode_ = false; // GRAINS pressed twice
-    int            fx_page_  = 0;     // FxPage: FILTER / CHORUS / RESONATOR / REVERB
+    int            fx_page_  = 0;     // FX page: slot 1 or 2 (0 / 1)
+    FxMenu         menu_;             // SHIFT + FX slot menu
     bool           fx_held_  = false; // FX button down: encoders = FX mixer
     bool           fx_used_  = false; // an encoder moved while FX was down
     uint32_t       now_ms_   = 0;     // Process() runs at 1 kHz
