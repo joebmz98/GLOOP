@@ -1336,14 +1336,18 @@ void Ui::DrawFx(const UiState& s)
 }
 
 // =============================================================================
-// LFO page: the selected track's LFO or envelope follower
+// LFO page: the selected track's LFO or envelope follower, as a night at sea
 //
-//   LFO, periodic shapes : two cycles of the shape, full size in dark grey
-//                          and scaled by DEPTH in white (flipped when DEPTH
-//                          is negative), with a cursor running at the phase
-//   S&H / DRIFT / ENV    : a scope scrolling right to left, one column per
-//                          frame (ENV: the level, filled from the bottom)
-//   Top line             : LFO / ENV chip → destination, and depth
+//   LFO : a little sailboat riding waves that ARE the LFO. The sea's surface
+//         is the shape (sine swell, triangle chop, square steps, saws), as
+//         tall as DEPTH (flat calm at 0, upside down when negative), rolling
+//         past at RATE. The boat sits on the current value and tips with
+//         the slope. S&H / DRIFT are random, so the water behind the boat
+//         is where it has been and fog hides what's coming.
+//   ENV : a lighthouse on a rock. Its beam reaches out and brightens with
+//         the followed track's level, and fades at RELEASE. The SOURCE
+//         chip sits on the rock.
+//   Top : LFO / ENV chip; DESTINATION and DEPTH top right
 // =============================================================================
 static float LfoShapeAt(int shape, float ph) // same maths as ModSource
 {
@@ -1358,23 +1362,60 @@ static float LfoShapeAt(int shape, float ph) // same maths as ModSource
     }
 }
 
+static void DrawSeaSky(Gfx& g, uint32_t frame)
+{
+    // Crescent moon and a few twinkling stars, as on the GRAINS night
+    g.FillCircle(118, 33, 5, W);
+    g.FillCircle(121, 31, 5, B);
+    static const int stars[6][2] = {{40, 30}, {58, 40}, {76, 27}, {92, 37}, {104, 26}, {132, 43}};
+    for(int i = 0; i < 6; i++)
+        g.Pixel(stars[i][0], stars[i][1], ((frame / 10) + i) % 4 == 0 ? M : L);
+}
+
+// Water under a surface ys[x]: dark sea, drifting glints, the moon's path
+static void DrawSeaWater(Gfx& g, const int* ys, uint16_t line, uint32_t frame)
+{
+    for(int x = 0; x < kSW; x++)
+        g.VLine(x, ys[x] + 1, kFxBot, D);
+    for(int i = 0; i < 9; i++) // glints drift slowly left
+    {
+        const int x = (i * 37 + 140 - int(frame / 3) % 140) % 140;
+        const int y = 70 + (i * 5) % 12;
+        if(x + 2 < kSW && y > ys[x] + 2 && y > ys[x + 2] + 2)
+            g.HLine(x, x + 2, y, M);
+    }
+    for(int r = 0; r < 4; r++) // the moon's reflection, wobbling
+    {
+        const int y  = 66 + r * 4;
+        const int hw = 5 - r;
+        const int o  = int(lroundf(sinf(frame * 0.15f + r * 1.7f) * 1.5f));
+        for(int x = 118 - hw + o; x <= 118 + hw + o; x += 2)
+            if(x >= 0 && x < kSW && y > ys[x] + 1)
+                g.Pixel(x, y, L);
+    }
+    for(int x = 1; x < kSW; x++)
+        g.Line(x - 1, ys[x - 1], x, ys[x], line);
+}
+
 void Ui::DrawLfo(const UiState& s)
 {
     const Params& p     = *s.params;
     const bool    env   = p.lfo_mode > 0.5f;
     const int     shape = int(p.lfo_shape + 0.5f);
-    const int     dest  = int(p.lfo_dest + 0.5f);
+    int           dest  = int(p.lfo_dest + 0.5f);
+    dest                = dest < 0 ? 0 : (dest >= kNumModDests ? kNumModDests - 1 : dest);
     const float   depth = p.lfo_depth;
     const bool    on    = fabsf(depth) > 0.0005f;
 
-    // Top line: [LFO] → CUTOFF            DEPTH -40%
-    const int cw = g_.Chip(1, 13, env ? "ENV" : "LFO", Gfx::kSmall);
-    g_.Text(cw + 4, 15, ">", M, Gfx::kSmall);
-    g_.Text(cw + 10, 15, kModDestNames[dest < 0 ? 0 : (dest >= kNumModDests ? kNumModDests - 1 : dest)],
-            on ? W : M, Gfx::kSmall);
+    // Top line: [LFO]                         CUTOFF -40%
+    g_.Chip(1, 13, env ? "ENV" : "LFO", Gfx::kSmall);
     {
-        char buf[12];
-        int  k = 0, v = int(lroundf(depth * 100.f));
+        char buf[20];
+        int  k = 0;
+        for(const char* c = kModDestNames[dest]; *c && k < 8; c++)
+            buf[k++] = *c;
+        buf[k++] = ' ';
+        int v    = int(lroundf(depth * 100.f));
         if(v < 0)
         {
             buf[k++] = '-';
@@ -1387,13 +1428,10 @@ void Ui::DrawLfo(const UiState& s)
         buf[k++] = char('0' + v % 10);
         buf[k++] = '%';
         buf[k]   = 0;
-        g_.TextRight(kSW - 2, 15, buf, on ? L : D, Gfx::kSmall);
+        g_.TextRight(138, 15, buf, on ? L : M, Gfx::kSmall);
     }
 
-    const int top = kFxTop + 2, bot = kFxBot - 1, x0 = 3, w = kModHist;
-    const int mid = (top + bot) / 2, amp = (bot - top) / 2 - 1;
-
-    // Scope history (kept for the selected track; cleared when it changes)
+    // History of the source (S&H / DRIFT wake), cleared on a track change
     if(mod_hist_track_ != s.track)
     {
         for(auto& v : mod_hist_)
@@ -1403,69 +1441,125 @@ void Ui::DrawLfo(const UiState& s)
     mod_hist_[mod_hist_w_] = s.mod_out;
     mod_hist_w_            = (mod_hist_w_ + 1) % kModHist;
 
+    DrawSeaSky(g_, frame_);
+    int ys[kSW];
+
     if(env)
     {
-        // ENV: SOURCE chip bottom left, the level filled up from the floor
+        // ---- ENV: lighthouse ---------------------------------------------------
+        const float lvl = fminf(1.f, fmaxf(0.f, s.mod_out));
+        for(int x = 0; x < kSW; x++) // calm sea, a slow 1 px ripple
+            ys[x] = 61 + (sinf(x * 0.45f + frame_ * 0.08f) > 0.75f ? 1 : 0);
+        DrawSeaWater(g_, ys, M, frame_);
+
+        const int lx = 20, lamp_y = 31;
+        const uint16_t beam = lvl > 0.66f ? W : (lvl > 0.33f ? L : M);
+        if(lvl > 0.02f)
+        {
+            // The beam: a wedge widening to the right, dithered inside
+            const int len = 8 + int(lvl * 112.f);
+            for(int x = lx + 4; x < lx + len && x < kSW; x++)
+            {
+                const float t  = float(x - lx);
+                const int   y0 = lamp_y - 1 - int(t * 0.10f);
+                const int   y1 = lamp_y + 1 + int(t * 0.16f);
+                g_.VLine(x, y0 + 1, y1 - 1, x > lx + len - 6 ? D : M, true);
+                g_.Pixel(x, y0, beam);
+                g_.Pixel(x, y1, beam);
+            }
+            // ...and its glitter on the water
+            for(int x = lx + 12; x < lx + len && x < kSW; x += 3)
+                if(((x + frame_ / 2) % 5) < 2)
+                    g_.Pixel(x, ys[x] + 2, beam);
+        }
+        // Rock: a low mound breaking the surface, lit along the top
+        for(int y = 55; y <= 62; y++)
+        {
+            const int hw = 5 + (y - 55) * 3 / 2;
+            g_.HLine(lx - hw, lx + hw, y, M, y > 56);
+            g_.Pixel(lx - hw, y, L);
+            g_.Pixel(lx + hw, y, L);
+        }
+        g_.HLine(lx - 5, lx + 5, 55, L);
+        // Tower: tapering, white and grey bands
+        for(int y = 34; y <= 56; y++)
+        {
+            const int hw = 3 + (y - 34) * 2 / 22;
+            g_.HLine(lx - hw, lx + hw, y, ((y - 34) / 4) % 2 ? M : W);
+        }
+        g_.HLine(lx - 5, lx + 5, 33, L); // gallery
+        g_.FillRect(lx - 3, 28, 7, 5, B); // lamp room
+        g_.VLine(lx - 3, 28, 32, L);
+        g_.VLine(lx + 3, 28, 32, L);
+        g_.FillRect(lx - 1, 29, 3, 3, lvl > 0.02f ? beam : D); // the lamp
+        g_.HLine(lx - 4, lx + 4, 27, M); // roof
+        g_.HLine(lx - 2, lx + 2, 26, M);
+        g_.Pixel(lx, 25, L);
+        // SOURCE: which track the light is listening to
         static const char* const kSrc[4] = {"T1", "T2", "T3", "IN"};
         const int src = int(p.env_src + 0.5f);
-        g_.HLine(x0, x0 + w - 1, bot, M);
-        for(int x = 0; x < w; x++)
-        {
-            const float v = mod_hist_[(mod_hist_w_ + x) % kModHist]; // oldest → newest
-            const int   y = bot - int(v * float(bot - top));
-            if(y < bot)
-            {
-                g_.VLine(x0 + x, y + 1, bot - 1, x > w - 4 ? M : D);
-                g_.Pixel(x0 + x, y, on ? W : L);
-            }
-        }
-        g_.Chip(x0, top, kSrc[src < 0 ? 0 : (src > 3 ? 3 : src)], Gfx::kSmall);
+        g_.Chip(lx - 5, 67, kSrc[src < 0 ? 0 : (src > 3 ? 3 : src)], Gfx::kSmall);
         return;
     }
 
-    // LFO
-    g_.HLine(x0, x0 + w - 1, mid, D); // centre line
-    for(int x = x0; x < x0 + w; x += 4) // dotted ±full-depth lines
+    // ---- LFO: a boat on waves shaped like the LFO --------------------------------
+    const int   mid    = 62, bx = 64;
+    const float amp    = depth * 11.f; // signed: negative DEPTH flips the sea
+    const float wl     = 46.f;         // pixels per cycle
+    const bool  random = shape >= 5;
+    const int   newest = (mod_hist_w_ + kModHist - 1) % kModHist;
+    for(int x = 0; x < kSW; x++)
     {
-        g_.Pixel(x, top, D);
-        g_.Pixel(x, bot, D);
+        float v;
+        if(!random) // to the right: what's coming; it rolls left as the phase runs
+            v = LfoShapeAt(shape, s.mod_phase + float(x - bx) / wl);
+        else if(x <= bx) // the wake: where it's been, one pixel per frame
+            v = mod_hist_[(newest + kModHist - (bx - x)) % kModHist];
+        else
+            v = s.mod_out; // under the fog
+        ys[x] = mid - int(lroundf(v * amp));
     }
-    if(shape >= 5) // S&H / DRIFT: random, so show what it has been doing
-    {
-        int prev = mid;
-        for(int x = 0; x < w; x++)
+    DrawSeaWater(g_, ys, on ? W : L, frame_);
+
+    // Fog over what a random LFO hasn't decided yet
+    if(random)
+        for(int x = bx + 9; x < kSW; x++)
         {
-            const float v = mod_hist_[(mod_hist_w_ + x) % kModHist];
-            const int   y = mid - int(lroundf(v * (on ? depth : 0.25f) * amp));
-            if(x > 0)
-                g_.Line(x0 + x - 1, prev, x0 + x, y, on ? W : M);
-            prev = y;
+            if(x < bx + 15 && (x - bx) % 2) // feathered front edge
+                continue;
+            const int top = 40 + int(lroundf(2.5f * sinf(x * 0.21f + frame_ * 0.04f)));
+            g_.VLine(x, top, ys[x] + 4, M, true);
         }
-        g_.Text(x0 + 1, top + 2, shape == 5 ? "S&H" : "DRIFT", M, Gfx::kSmall);
-        return;
-    }
-    // Periodic: two cycles, the cursor at the current phase
-    int prev_full = mid, prev = mid;
-    for(int x = 0; x < w; x++)
+
+    // The boat: hull tips with the slope (limited, so a saw's cliff doesn't
+    // tear it apart), mast leans with it, pennant flaps
+    float slope = float(ys[bx + 3] - ys[bx - 3]) / 6.f;
+    slope       = fmaxf(-0.45f, fminf(0.45f, slope));
+    int   by    = ys[bx];
+    for(int c = -2; c <= 2; c++) // ride the crest, don't sink into it
+        by = by < ys[bx + c] ? by : ys[bx + c];
+    for(int c = -5; c <= 5; c++)
     {
-        const float v  = LfoShapeAt(shape, 2.f * float(x) / float(w - 1));
-        const int   yf = mid - int(lroundf(v * amp));
-        const int   y  = mid - int(lroundf(v * depth * amp));
-        if(x > 0)
-        {
-            g_.Line(x0 + x - 1, prev_full, x0 + x, yf, D);
-            if(on)
-                g_.Line(x0 + x - 1, prev, x0 + x, y, W);
-        }
-        prev_full = yf;
-        prev      = y;
+        const int a   = c < 0 ? -c : c;
+        const int top = by - 2 + int(lroundf(slope * c));
+        g_.Pixel(bx + c, top, W); // deck
+        if(a <= 4)
+            g_.Pixel(bx + c, top + 1, W);
+        if(a <= 3)
+            g_.Pixel(bx + c, top + 2, M); // shadowed keel
     }
-    const int   cx = x0 + int(s.mod_phase * 0.5f * float(w - 1)); // first cycle
-    const float cv = LfoShapeAt(shape, s.mod_phase);
-    const int   cy = mid - int(lroundf(cv * (on ? depth : 1.f) * amp));
-    for(int y = top; y <= bot; y += 2)
-        g_.Pixel(cx, y, M);
-    g_.FillCircle(cx, cy, 2, on ? W : L);
+    const int lean = int(lroundf(slope * 5.f));
+    const int mtx = bx + lean, mty = by - 16;
+    g_.Line(bx, by - 3, mtx, mty, W);
+    for(int k = 2; k <= 11; k++) // sail: rows widening toward the boom
+    {
+        const int y  = mty + k;
+        const int mx = mtx - lean * k / 13;
+        g_.HLine(mx + 1, mx + 1 + k * 7 / 11, y, k == 11 ? W : L);
+    }
+    const int flap = (frame_ / 4) % 2;
+    g_.HLine(mtx - 3, mtx - 1, mty + flap, W); // pennant
+    g_.Pixel(mtx - 4, mty + 1 - flap, W);
 }
 
 // =============================================================================
