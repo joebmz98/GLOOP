@@ -35,6 +35,50 @@
 
 namespace gloop
 {
+// Most blocks are 48 samples; scratch buffers inside the FX hold this many
+// (longer blocks are processed in chunks)
+static constexpr int kFxChunk = 64;
+
+// Chamberlin state-variable filter, double-sampled: the same maths as
+// DaisySP's Svf (with its drive term at 0, as GLOOP always used it), but
+// inline, stereo, and with the coefficients worked out once per block. The
+// library's version is a function call per channel per sample, compiled at
+// -Os with the rest of the libraries.
+struct StereoSvf
+{
+    float low[2] = {0.f, 0.f}, band[2] = {0.f, 0.f};
+    float o_low[2] = {0.f, 0.f}, o_high[2] = {0.f, 0.f}, o_band[2] = {0.f, 0.f};
+    float f = 0.25f, damp = 2.f;
+
+    // As Svf::SetFreq + SetRes. res_q = res^0.25 (the caller has it already)
+    void Set(float hz, float res_q, float sr)
+    {
+        hz = hz < 0.000001f ? 0.000001f : (hz > sr * 0.5f ? sr * 0.5f - 1.f : hz);
+        f  = 2.f * sinf(3.14159265358979f * fminf(0.25f, hz / (sr * 2.f)));
+        damp = fminf(2.f * (1.f - res_q), fminf(2.f, 2.f / f - f * 0.5f));
+    }
+
+    // One channel, one sample (both passes); results in o_low / o_high / o_band
+    inline void Run(int ch, float in)
+    {
+        float lo = low[ch], bp = band[ch];
+        float n1 = in - damp * bp;
+        lo += f * bp;
+        float hi = n1 - lo;
+        bp       = f * hi + bp;
+        float ol = 0.5f * lo, oh = 0.5f * hi, ob = 0.5f * bp;
+        n1       = in - damp * bp;
+        lo += f * bp;
+        hi = n1 - lo;
+        bp = f * hi + bp;
+        o_low[ch]  = ol + 0.5f * lo;
+        o_high[ch] = oh + 0.5f * hi;
+        o_band[ch] = ob + 0.5f * bp;
+        low[ch]    = lo;
+        band[ch]   = bp;
+    }
+};
+
 class TrackFilter
 {
   public:
@@ -43,12 +87,8 @@ class TrackFilter
 
     void Init(float sample_rate)
     {
-        sr_ = sample_rate;
-        for(auto& f : svf_)
-        {
-            f.Init(sample_rate);
-            f.SetDrive(0.f);
-        }
+        sr_        = sample_rate;
+        svf_       = StereoSvf();
         cutoff_hz_ = 18000.f;
         ClearComb();
     }
@@ -69,15 +109,12 @@ class TrackFilter
         makeup_ = 0.25f / SoftClip(0.25f * gain_) / (1.f + drive * 0.9f);
         float target = 40.f * powf(450.f, cutoff01);
         cutoff_hz_ += (target - cutoff_hz_) * 0.15f; // one-pole smoothing
-        const float res = reso * 0.9f;
-        for(auto& f : svf_)
-        {
-            f.SetFreq(cutoff_hz_);
-            f.SetRes(res);
-        }
+        const float res   = reso * 0.9f;
+        const float res_q = powf(res, 0.25f);
+        svf_.Set(cutoff_hz_, res_q, sr_);
         // The SVF's band output peaks at 1/damp (-6 dB with no RESO): lift it
         // so BP sits at about the same level as LP/HP
-        bp_gain_ = 1.f + (1.f - powf(res, 0.25f));
+        bp_gain_ = 1.f + (1.f - res_q);
 
         // Comb: CUTOFF is the pitch (delay = one period), RESO the feedback
         const float comb_hz = fminf(kCombMaxHz, fmaxf(kCombMinHz, cutoff_hz_));
@@ -112,8 +149,8 @@ class TrackFilter
         // between them)
         if(type_ != kComb || (fading && prev_type_ != kComb))
         {
-            svf_[0].Process(l);
-            svf_[1].Process(r);
+            svf_.Run(0, l);
+            svf_.Run(1, r);
         }
         if(CombRunning())
             ProcessComb(l, r);
@@ -127,6 +164,49 @@ class TrackFilter
             l = pl + k * (l - pl);
             r = pr + k * (r - pr);
         }
+    }
+
+    // A block, in place. The usual case (LP / HP / BP, not mid-crossfade)
+    // runs with the filter state held in registers; the rest per sample.
+    void ProcessBlock(float* __restrict l, float* __restrict r, int n)
+    {
+        if(xf_ >= 1.f && type_ != kComb)
+        {
+            StereoSvf   s   = svf_; // local copy: stays in registers
+            const bool  drv = drive_on_;
+            const float g = gain_, mk = makeup_, bpg = bp_gain_;
+            const int   t = type_;
+            for(int i = 0; i < n; i++)
+            {
+                float a = l[i], b = r[i];
+                if(drv)
+                {
+                    a = SoftClip(a * g) * mk;
+                    b = SoftClip(b * g) * mk;
+                }
+                s.Run(0, a);
+                s.Run(1, b);
+                if(t == 1)
+                {
+                    l[i] = s.o_high[0];
+                    r[i] = s.o_high[1];
+                }
+                else if(t == 2)
+                {
+                    l[i] = s.o_band[0] * bpg;
+                    r[i] = s.o_band[1] * bpg;
+                }
+                else
+                {
+                    l[i] = s.o_low[0];
+                    r[i] = s.o_low[1];
+                }
+            }
+            svf_ = s;
+            return;
+        }
+        for(int i = 0; i < n; i++)
+            Process(l[i], r[i]);
     }
 
     static inline float SoftClip(float x) // tanh-like, flat at +/-1 beyond +/-3
@@ -190,14 +270,14 @@ class TrackFilter
     {
         switch(type)
         {
-            case 1: return svf_[ch].High();
-            case 2: return svf_[ch].Band() * bp_gain_;
+            case 1: return svf_.o_high[ch];
+            case 2: return svf_.o_band[ch] * bp_gain_;
             case kComb: return comb_out_[ch];
-            default: return svf_[ch].Low();
+            default: return svf_.o_low[ch];
         }
     }
 
-    daisysp::Svf svf_[2];
+    StereoSvf    svf_;
     int          type_      = 0;
     int          prev_type_ = 0;
     float        xf_        = 1.f;
@@ -268,6 +348,24 @@ class StereoChorus
         if(phase_ >= 1.f)
             phase_ -= 1.f;
         w_ = (w_ + 1) & (kLen - 1);
+    }
+
+    void ProcessBlock(float* __restrict l, float* __restrict r, int n)
+    {
+        for(int i = 0; i < n; i++)
+            Process(l[i], r[i]);
+    }
+
+    // Track idle (stopped and silent, see AudioCallback): the delay line
+    // already holds silence, so only the LFO moves on (the UI's choir)
+    void Skip(int n)
+    {
+        for(int i = 0; i < n; i++) // per sample, exactly as Process would
+        {
+            phase_ += inc_;
+            if(phase_ >= 1.f)
+                phase_ -= 1.f;
+        }
     }
 
     float Phase() const { return phase_; } // for the UI
@@ -389,9 +487,8 @@ class ModalResonator
             h_[n_]   = 1.f / (1.f + r * g + g * g);
             // Amplitude: Rings' attenuation towards Nyquist, scaled by
             // 1/sqrt(Q) so very resonant modes don't jump out
-            const float a = (1.f - 2.f * f) / sqrtf(mq);
-            al_[n_]       = a * ((i & 1) ? 0.55f : 1.f);
-            ar_[n_]       = a * ((i & 1) ? 1.f : 0.55f);
+            // (even modes lean left, odd right: see ProcessBlock)
+            amp_[n_] = (1.f - 2.f * f) / sqrtf(mq);
             n_++;
 
             stretch += stiffness;
@@ -401,30 +498,21 @@ class ModalResonator
         }
     }
 
-    inline void Process(float& l, float& r)
+    // A block, in place. Four modes at a time over the whole block (rather
+    // than sample by sample over all the modes), so their coefficients and
+    // state stay in registers: per mode per sample that's half an
+    // accumulate instead of seven reads and two writes. Even modes are summed apart from
+    // odd ones; the stereo spread (even left, odd right, the other side at
+    // 0.55) is applied to the two sums afterwards.
+    void ProcessBlock(float* __restrict l, float* __restrict r, int n)
     {
         if(!active_)
             return;
-        const float in = 0.5f * (l + r);
-        float       wl = 0.f, wr = 0.f;
-        for(int i = 0; i < n_; i++)
+        for(int off = 0; off < n; off += kFxChunk)
         {
-            const float hp = (in - rg_[i] * s1_[i] - s2_[i]) * h_[i];
-            const float bp = g_[i] * hp + s1_[i];
-            s1_[i]         = g_[i] * hp + bp;
-            const float lp = g_[i] * bp + s2_[i];
-            s2_[i]         = g_[i] * bp + lp;
-            wl += al_[i] * bp;
-            wr += ar_[i] * bp;
+            const int m = n - off < kFxChunk ? n - off : kFxChunk;
+            Chunk(l + off, r + off, m);
         }
-        in_acc_ += in * in;
-        wet_acc_ += 0.5f * (wl * wl + wr * wr);
-        blk_n_++;
-        wl = SoftClip(wl * gain_);
-        wr = SoftClip(wr * gain_);
-        level_ += 0.001f * (fabsf(wl) + fabsf(wr) - level_); // for the UI
-        l += mix_ * (wl - l);
-        r += mix_ * (wr - r);
     }
 
     // Load governor: fewer modes when the CPU is busy (6..16). The highest
@@ -435,6 +523,101 @@ class ModalResonator
     int   Modes() const { return n_; }
 
   private:
+    void Chunk(float* __restrict l, float* __restrict r, int n)
+    {
+        float in[kFxChunk], ev[kFxChunk], od[kFxChunk];
+        float in_acc = 0.f;
+        for(int i = 0; i < n; i++)
+        {
+            in[i] = 0.5f * (l[i] + r[i]);
+            ev[i] = od[i] = 0.f;
+            in_acc += in[i] * in[i];
+        }
+        // Modes four at a time (even, odd, even, odd): four independent
+        // filters side by side, so the in-order M7 always has another mode's
+        // maths to issue while it waits on a result. One mode alone is a
+        // single dependent chain and stalls (~46 → ~18 cycles per mode per
+        // sample on llvm-mca's Cortex-M7 model). Leftover modes go one by one.
+        int k = 0;
+        for(; k + 3 < n_; k += 4)
+        {
+            const float g0 = g_[k], rg0 = rg_[k], h0 = h_[k], a0 = amp_[k];
+            const float g1 = g_[k + 1], rg1 = rg_[k + 1], h1 = h_[k + 1], a1 = amp_[k + 1];
+            const float g2 = g_[k + 2], rg2 = rg_[k + 2], h2 = h_[k + 2], a2 = amp_[k + 2];
+            const float g3 = g_[k + 3], rg3 = rg_[k + 3], h3 = h_[k + 3], a3 = amp_[k + 3];
+            float       p1 = s1_[k], p2 = s2_[k], q1 = s1_[k + 1], q2 = s2_[k + 1];
+            float       u1 = s1_[k + 2], u2 = s2_[k + 2], v1 = s1_[k + 3], v2 = s2_[k + 3];
+            for(int i = 0; i < n; i++)
+            {
+                const float x   = in[i];
+                const float hp0 = (x - rg0 * p1 - p2) * h0;
+                const float hp1 = (x - rg1 * q1 - q2) * h1;
+                const float hp2 = (x - rg2 * u1 - u2) * h2;
+                const float hp3 = (x - rg3 * v1 - v2) * h3;
+                const float bp0 = g0 * hp0 + p1;
+                const float bp1 = g1 * hp1 + q1;
+                const float bp2 = g2 * hp2 + u1;
+                const float bp3 = g3 * hp3 + v1;
+                p1              = g0 * hp0 + bp0;
+                q1              = g1 * hp1 + bp1;
+                u1              = g2 * hp2 + bp2;
+                v1              = g3 * hp3 + bp3;
+                const float lp0 = g0 * bp0 + p2;
+                const float lp1 = g1 * bp1 + q2;
+                const float lp2 = g2 * bp2 + u2;
+                const float lp3 = g3 * bp3 + v2;
+                p2              = g0 * bp0 + lp0;
+                q2              = g1 * bp1 + lp1;
+                u2              = g2 * bp2 + lp2;
+                v2              = g3 * bp3 + lp3;
+                ev[i] += a0 * bp0 + a2 * bp2;
+                od[i] += a1 * bp1 + a3 * bp3;
+            }
+            s1_[k]     = p1;
+            s2_[k]     = p2;
+            s1_[k + 1] = q1;
+            s2_[k + 1] = q2;
+            s1_[k + 2] = u1;
+            s2_[k + 2] = u2;
+            s1_[k + 3] = v1;
+            s2_[k + 3] = v2;
+        }
+        for(; k < n_; k++)
+        {
+            const float g = g_[k], rg = rg_[k], h = h_[k], a = amp_[k];
+            float       p1 = s1_[k], p2 = s2_[k];
+            float* __restrict acc = (k & 1) ? od : ev;
+            for(int i = 0; i < n; i++)
+            {
+                const float hp = (in[i] - rg * p1 - p2) * h;
+                const float bp = g * hp + p1;
+                p1             = g * hp + bp;
+                const float lp = g * bp + p2;
+                p2             = g * bp + lp;
+                acc[i] += a * bp;
+            }
+            s1_[k] = p1;
+            s2_[k] = p2;
+        }
+        float       wet_acc = 0.f, level = level_;
+        const float gain = gain_, mix = mix_;
+        for(int i = 0; i < n; i++)
+        {
+            float wl = ev[i] + 0.55f * od[i];
+            float wr = 0.55f * ev[i] + od[i];
+            wet_acc += 0.5f * (wl * wl + wr * wr);
+            wl = SoftClip(wl * gain);
+            wr = SoftClip(wr * gain);
+            level += 0.001f * (fabsf(wl) + fabsf(wr) - level); // for the UI
+            l[i] += mix * (wl - l[i]);
+            r[i] += mix * (wr - r[i]);
+        }
+        level_ = level;
+        in_acc_ += in_acc;
+        wet_acc_ += wet_acc;
+        blk_n_ += n;
+    }
+
     void Clear()
     {
         for(int i = 0; i < kModes; i++)
@@ -483,7 +666,7 @@ class ModalResonator
     bool  active_ = false;
     int   n_      = 0;
     int   max_modes_ = kModes;
-    float g_[kModes], rg_[kModes], h_[kModes], al_[kModes], ar_[kModes];
+    float g_[kModes], rg_[kModes], h_[kModes], amp_[kModes];
     float s1_[kModes], s2_[kModes];
     float in_acc_ = 0.f, wet_acc_ = 0.f, in_ms_ = 0.f, wet_ms_ = 0.f, gain_ = 1.f, level_ = 0.f;
     int   blk_n_ = 0;

@@ -62,6 +62,9 @@ static constexpr size_t kMaxLoopSeconds = 30;
 static constexpr size_t kTapeFrames     = kSampleRate * kMaxLoopSeconds;
 static constexpr size_t kBlockSize      = 48; // DaisyDuino default
 static constexpr size_t kMaxBlock       = 64; // scratch buffers' size
+// A stopped track's FX are skipped once they've been silent (< -120 dBFS)
+// this many blocks in a row (~64 ms): every tail has died away by then
+static constexpr int kQuietBlocks = 64;
 
 static int16_t DSY_SDRAM_BSS tape_frames[kNumTracks][kTapeFrames * 2]; // L R L R
 static daisysp::ReverbSc DSY_SDRAM_BSS reverb;
@@ -90,6 +93,9 @@ struct Track
     const char* tape_name = nullptr; // sample loaded onto the tape (label)
     float       grain_l[kMaxBlock];  // this block's grain output
     float       grain_r[kMaxBlock];
+    float       sig_l[kMaxBlock];    // this block's signal, through the FX
+    float       sig_r[kMaxBlock];
+    int         quiet_blocks = 0;    // stopped and silent for this many blocks
 
     // Grain level matching (see "Level match" in AudioCallback)
     float ref_ms   = 0.f; // smoothed mean-square of the plain loop at the head
@@ -441,6 +447,7 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
     }
     click_on &= controls.metronome_on();
     click_on |= counting; // the count-in always clicks
+    float click_buf[kMaxBlock];
 
     for(size_t i = 0; i < size; i++)
     {
@@ -451,11 +458,9 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
 
         // Click position: the followed loop's head, or the free counter
         const double beat_pos = follow >= 0 ? tracks[follow].tape.Head() : free_pos;
-        const float  click    = metronome.Process(beat_pos, beat_len, click_on);
+        click_buf[i]          = metronome.Process(beat_pos, beat_len, click_on);
         free_pos += 1.0;
 
-        float mix_l = 0.f, mix_r = 0.f;   // dry track mix
-        float send_l = 0.f, send_r = 0.f; // into the reverb
         for(int t = 0; t < kNumTracks; t++)
         {
             Track& tr = tracks[t];
@@ -518,14 +523,46 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
                 }
                 tr.tape.Advance();
             }
-            // Per-track FX chain: filter → chorus → resonator (then reverb send)
-            tr.filter.Process(l, r);
-            tr.chorus.Process(l, r);
-            tr.res.Process(l, r);
-            // Level for the envelope followers (before the mute, so a muted
-            // track can still drive another track's ENV)
-            tr.blk_pk = fmaxf(tr.blk_pk, fmaxf(fabsf(l), fabsf(r)));
+            tr.sig_l[i] = l;
+            tr.sig_r[i] = r;
+        }
+    }
 
+    // ---- 4b. Per-track FX chain, a block at a time: filter → chorus →
+    // resonator. A track that's stopped and has been silent for a while
+    // (its FX tails have died away) is skipped: silence in, silence out.
+    const int n = int(size);
+    for(int t = 0; t < kNumTracks; t++)
+    {
+        Track& tr = tracks[t];
+        if(!playing[t] && tr.quiet_blocks >= kQuietBlocks)
+        {
+            tr.chorus.Skip(n); // keeps the UI's choir moving
+            continue;          // sig_l / sig_r are already silent
+        }
+        tr.filter.ProcessBlock(tr.sig_l, tr.sig_r, n);
+        tr.chorus.ProcessBlock(tr.sig_l, tr.sig_r, n);
+        tr.res.ProcessBlock(tr.sig_l, tr.sig_r, n);
+        // Level for the envelope followers (before the mute, so a muted
+        // track can still drive another track's ENV)
+        float pk = 0.f;
+        for(int i = 0; i < n; i++)
+            pk = fmaxf(pk, fmaxf(fabsf(tr.sig_l[i]), fabsf(tr.sig_r[i])));
+        tr.blk_pk    = pk;
+        tr.quiet_blocks = (!playing[t] && pk < 1e-6f) ? tr.quiet_blocks + 1 : 0;
+    }
+
+    // ---- 4c. Mix: mute and VOLUME, reverb sends, reverb, out ----
+    for(size_t i = 0; i < size; i++)
+    {
+        const float in_l = in[0][i];
+        const float in_r = in[1][i];
+        float mix_l = 0.f, mix_r = 0.f;   // dry track mix
+        float send_l = 0.f, send_r = 0.f; // into the reverb
+        for(int t = 0; t < kNumTracks; t++)
+        {
+            Track& tr = tracks[t];
+            float  l = tr.sig_l[i], r = tr.sig_r[i];
             // Mute (SHIFT + track button): ~4 ms glide, the track keeps
             // running underneath so it comes back in time. VOLUME
             // modulation ramps across the block.
@@ -547,8 +584,8 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
 
         // Input is monitored dry so you can hear what you're recording
         // The click goes to the output only, never into a recording
-        out[0][i] = OutputLimit(mix_l + wet_l + in_l + click);
-        out[1][i] = OutputLimit(mix_r + wet_r + in_r + click);
+        out[0][i] = OutputLimit(mix_l + wet_l + in_l + click_buf[i]);
+        out[1][i] = OutputLimit(mix_r + wet_r + in_r + click_buf[i]);
     }
     input_peak   = in_pk;
     metro_active = click_on;

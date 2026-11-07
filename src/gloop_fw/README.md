@@ -119,6 +119,8 @@ SPI1's clock divides by powers of 2 (50 MHz → 25 or 12.5 MHz). For 40 MHz, set
 | Load governor | above 85% on any block (or 80% average) the grain pool and the resonators' modes shrink within ~15 ms (down to a quarter), and grow back over ~1.5 s once the average is under 65% | `gloop_fw.ino` |
 | CPU safety valve | also stops new grains above 80% avg / 90% peak, resumes below 70% | `gloop_fw.ino` |
 | CPU clock | **480 MHz** (the board default is 400) | `clock.cpp` (`kBoost480`) |
+| Per-track FX | run a block (48 samples) at a time: filter → chorus → resonator. The filter is GLOOP's own inline copy of DaisySP's SVF maths (no library call per sample); the resonator runs four modes side by side (~2.5× cheaper on the M7) | `fx.h` |
+| Idle tracks | a stopped track's FX are skipped once they've been silent (below −120 dBFS) for 64 ms, so a stopped track costs almost nothing | `kQuietBlocks` (`gloop_fw.ino`) |
 | Output | soft limiter from 0.8 of full scale | `OutputLimit()` (`gloop_fw.ino`) |
 
 Hold SHIFT to read the audio CPU load: **PK** (worst block in the last second) and **CPU** (average). CPU is shown inverted while the governor or safety valve is holding things back. Cost scales with active grains, resonators and the reverb, not loop length.
