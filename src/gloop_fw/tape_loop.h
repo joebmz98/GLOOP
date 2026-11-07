@@ -175,6 +175,22 @@ class TapeLoop
 
     void SetPlaying(bool p) { playing_ = p && rec_len_ > 0 && !recording_; }
 
+    // Clear the loop (SHIFT + PLAY + hold the track button): stops it,
+    // cancels any arm or take, and empties the tape
+    void Clear()
+    {
+        recording_     = false;
+        playing_       = false;
+        armed_         = false;
+        count_ready_   = false;
+        counting_      = false;
+        grid_lock_     = false;
+        stop_at_       = 0;
+        rec_len_       = 0;
+        head_          = 0.0;
+        just_finished_ = true; // the UI rebuilds (empties) its overview
+    }
+
     // Play from the start of the loop region (if there is a loop)
     void Restart()
     {

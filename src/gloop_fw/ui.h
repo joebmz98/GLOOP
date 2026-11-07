@@ -51,6 +51,11 @@ struct UiState
     EncoderContext  enc;                     // what each encoder edits now
     int             fx_page      = 0;        // FX page: which slot (0 / 1)
     FxMenu          fx_menu;                 // SHIFT + FX slot menu
+    LfoMenu         lfo_menu;                // SHIFT + LFO mode menu
+    int             clear_track    = -1;     // being held to clear (-1: none)
+    float           clear_progress = 0.f;    // 0..1 of the 2 s hold
+    int             cleared_track  = -1;     // just cleared...
+    uint32_t        cleared_age_ms = 100000; // ...this long ago
     const ParamDesc* popup       = nullptr;  // last parameter turned
     uint32_t        popup_age_ms = 100000;   // ...and how long ago
     bool            muted        = false; // selected track muted
@@ -69,6 +74,8 @@ class Ui
   public:
     void Init(St7789* display, const EnvelopeTable* env);
     void Draw(const UiState& s);
+    // Power-up screen: GLOOP with tape-reel O's. t: 0..1 through the intro
+    void DrawSplash(float t);
 
     // Scan the recording once (after a take finishes) into peak columns for
     // the waveform strip, so the strip never has to read SDRAM per frame.
@@ -82,6 +89,9 @@ class Ui
     void DrawLfo(const UiState& s);
     void DrawFxEmpty(const UiState& s);
     void DrawFxMenu(const UiState& s);
+    void DrawLfoMenu(const UiState& s);
+    void DrawClearOverlay(const UiState& s);
+    void DrawReel(int cx, int cy, float angle, float pack, uint16_t c);
     void DrawFxIcon(int fx, int x, int y, uint16_t c);
     void DrawReadouts(const UiState& s);
     void DrawPopup(const UiState& s);

@@ -6,11 +6,10 @@
 //
 // Everything acts on the SELECTED track (T1 or T2):
 //
-//   T1 / T2 / T3 (track buttons): 1st press selects that track; pressed again
-//                                on the LOOP page it opens the sample browser
-//                                for that track (from another page it jumps to
-//                                LOOP first)
+//   T1 / T2 / T3 (track buttons): select that track (pressed again on another
+//                                page: back to LOOP)
 //   LOOP / GRAINS buttons      : choose which page the 4 encoders edit
+//   SHIFT + LOOP               : sample browser for the selected track
 //   GRAINS again (on GRAINS)   : alt layer on/off: encoder 1 = grain SIZE,
 //                                encoder 3 = grain PITCH, encoder 4 =
 //                                ENVELOPE (labels inverted)
@@ -23,9 +22,14 @@
 //   Hold FX + turn             : FX mixer from any page: slot 1's first and
 //                                last parameter, then slot 2's (FX release
 //                                then does nothing)
-//   LFO                        : LFO page (the selected track's LFO);
-//                                LFO again: switches that track between
-//                                LFO and ENV (envelope follower)
+//   LFO                        : LFO page (the selected track's LFO / ENV)
+//   SHIFT + LFO                : LFO mode menu: LFO or ENVELOPE follower
+//                                (any encoder turns, any push picks)
+//   SHIFT + PLAY, then hold a
+//   track button for 2 s       : clear that track's loop (SHIFT + PLAY on its
+//                                own, on release: click on / off)
+//   REC                        : arms on RELEASE (waits for input). Hold
+//                                REC and press PLAY instead: count-in arm
 //   Hold an encoder + turn     : its second parameter, where it has one
 //                                (RESONATOR enc 2 = BRIGHT)
 //   SHIFT + T1 / T2 / T3       : mute / unmute that track
@@ -119,12 +123,28 @@ class Controls
 
         now_ms_++;
         shift_held_ = shift_.Pressed();
+        if(play_.RisingEdge()) // (before the track buttons can mark it used)
+        {
+            play_shift_ = shift_held_;
+            play_used_  = false;
+        }
 
         // 2. Page selection (also closes the browser)
         //    LOOP / GRAINS act on press. GRAINS again: its alt layer.
         for(int i = 0; i < 2; i++)
             if(page_btn_[i].RisingEdge())
             {
+                menu_.open     = false;
+                lfo_menu_.open = false;
+                if(Page(i) == Page::Loop && shift_held_) // SHIFT + LOOP: browser
+                {
+                    page_ = Page::Loop;
+                    if(browser.IsOpen())
+                        browser.Close();
+                    else
+                        browser.Open(selected_track_);
+                    continue;
+                }
                 if(Page(i) == Page::Grains && page_ == Page::Grains && !browser.IsOpen())
                     grain_size_mode_ = !grain_size_mode_;
                 else if(Page(i) != page_)
@@ -142,9 +162,10 @@ class Controls
         daisy::Switch& fx = page_btn_[int(Page::Fx)];
         if(fx.RisingEdge())
             fx_used_ = false;
-        fx_held_ = fx.Pressed() && !browser.IsOpen() && !menu_.open;
+        fx_held_ = fx.Pressed() && !browser.IsOpen() && !menu_.open && !lfo_menu_.open;
         if(fx.FallingEdge() && !fx_used_)
         {
+            lfo_menu_.open = false;
             if(shift_held_)
             {
                 if(menu_.open)
@@ -173,33 +194,43 @@ class Controls
             browser.Close();
         }
 
-        //    LFO acts on press. Pressed again on the LFO page: the selected
-        //    track switches between LFO and ENV (envelope follower).
+        //    LFO acts on press: the LFO page. SHIFT + LFO opens / closes the
+        //    mode menu (LFO or ENVELOPE follower); LFO in the menu closes it.
         if(page_btn_[int(Page::Lfo)].RisingEdge())
         {
-            if(page_ == Page::Lfo && !browser.IsOpen())
+            if(shift_held_ && !lfo_menu_.open)
             {
-                Params& sp  = *params[selected_track_];
-                sp.lfo_mode = sp.lfo_mode > 0.5f ? 0.f : 1.f;
+                lfo_menu_.open   = true;
+                lfo_menu_.cursor = params[selected_track_]->lfo_mode > 0.5f ? 1 : 0;
             }
+            else
+                lfo_menu_.open = false;
             grain_size_mode_ = false;
             page_            = Page::Lfo;
             browser.Close();
             menu_.open = false;
         }
 
-        // 3. Track buttons: select → (on LOOP) open browser → close browser.
-        //    SHIFT + track button: mute / unmute that track.
+        // 3. Track buttons: select (or close the browser). SHIFT + track
+        //    button: mute / unmute that track. With SHIFT + PLAY held, a
+        //    track button held for 2 s clears that track's loop instead.
         for(int t = 0; t < kNumTracks; t++)
         {
             if(!track_[t].RisingEdge())
                 continue;
+            if(shift_held_ && play_.Pressed())
+            {
+                clear_track_ = t; // starts the 2 s hold (below)
+                clear_start_ = now_ms_;
+                play_used_   = true; // so PLAY's release won't toggle the click
+                continue;
+            }
             if(shift_held_)
             {
                 muted_[t] = !muted_[t];
                 continue;
             }
-            if(menu_.open) // the menu stays open, now for that track
+            if(menu_.open || lfo_menu_.open) // the menu stays open, for that track
             {
                 selected_track_ = t;
                 continue;
@@ -210,8 +241,18 @@ class Controls
                 selected_track_ = t;
             else if(page_ != Page::Loop)
                 page_ = Page::Loop;
-            else
-                browser.Open(t);
+        }
+        if(clear_track_ >= 0)
+        {
+            if(!track_[clear_track_].Pressed() || !play_.Pressed())
+                clear_track_ = -1; // let go too early: nothing happens
+            else if(now_ms_ - clear_start_ >= kClearHoldMs)
+            {
+                tapes[clear_track_]->Clear();
+                cleared_track_ = clear_track_;
+                cleared_ms_    = now_ms_;
+                clear_track_   = -1;
+            }
         }
 
         Params&   p    = *params[selected_track_];
@@ -232,6 +273,27 @@ class Controls
             browser.Turn(steps, shift_held_);
             if(pushed)
                 browser.Push();
+            Transport(tape, tapes);
+            return;
+        }
+
+        //    The LFO mode menu: any turn moves, any push picks (and closes)
+        if(lfo_menu_.open)
+        {
+            int  steps  = 0;
+            bool pushed = false;
+            for(auto& e : enc_)
+            {
+                steps += e.Increment();
+                pushed |= e.RisingEdge();
+            }
+            if(steps != 0)
+                lfo_menu_.cursor = ((lfo_menu_.cursor + steps) % 2 + 2) % 2;
+            if(pushed)
+            {
+                p.lfo_mode     = float(lfo_menu_.cursor);
+                lfo_menu_.open = false;
+            }
             Transport(tape, tapes);
             return;
         }
@@ -369,6 +431,17 @@ class Controls
     bool grain_size_mode() const { return grain_size_mode_; } // GRAINS alt layer
     int  fx_page() const { return fx_page_; }
     const FxMenu& fx_menu() const { return menu_; }
+    const LfoMenu& lfo_menu() const { return lfo_menu_; }
+    // Clearing a loop (SHIFT + PLAY + hold a track): the track being held
+    // (-1: none) and how far along, 0..1; then which track was just cleared
+    // and how long ago (ms), for the confirmation on screen
+    int   clear_track() const { return clear_track_; }
+    float clear_progress() const
+    {
+        return clear_track_ < 0 ? 0.f : float(now_ms_ - clear_start_) / float(kClearHoldMs);
+    }
+    int      cleared_track() const { return cleared_track_; }
+    uint32_t cleared_age_ms() const { return now_ms_ - cleared_ms_; }
     bool fx_held() const { return fx_held_; }
 
     // What the encoders edit right now (the UI shows the same thing)
@@ -432,6 +505,7 @@ class Controls
     {
         if(rec_.RisingEdge())
         {
+            rec_pending_ = false;
             if(tape.IsRecording())
                 tape.RequestStop(); // finish the take → loops
             else if(shift_held_)
@@ -439,12 +513,26 @@ class Controls
             else if(tape.IsArmed() || tape.IsCountReady() || tape.IsCounting())
                 tape.Disarm(); // second press: cancel
             else
-                tape.Arm(); // wait for input (in time with a playing loop)
+                rec_pending_ = true; // arm on release, unless PLAY comes first
         }
-        if(play_.RisingEdge() && rec_.Pressed() && tape.IsArmed())
-            tape.ArmCountIn(); // hold REC + PLAY: count-in arm
-        else if(play_.RisingEdge() && shift_held_)
+        if(rec_.FallingEdge() && rec_pending_)
+        {
+            rec_pending_ = false;
+            tape.Arm(); // wait for input (in time with a playing loop)
+        }
+        // PLAY: SHIFT + PLAY toggles the click on RELEASE, and only if no
+        // track was cleared while it was held (see Process)
+        if(play_.FallingEdge() && play_shift_ && !play_used_)
             metronome_on_ = !metronome_on_; // SHIFT + PLAY: click on / off
+        if(play_.RisingEdge() && rec_.Pressed() && rec_pending_)
+        {
+            rec_pending_ = false; // hold REC + PLAY: count-in arm
+            tape.ArmCountIn();
+        }
+        else if(play_.RisingEdge() && shift_held_)
+        {
+            // (SHIFT + PLAY: handled on release, or the clear gesture)
+        }
         else if(play_.RisingEdge() && tape.IsCountReady())
             tape.StartCountIn(); // 4 beats, then record on the beat
         else if(play_.RisingEdge() && tape.IsCounting())
@@ -476,6 +564,15 @@ class Controls
     bool           grain_size_mode_ = false; // GRAINS pressed twice
     int            fx_page_  = 0;     // FX page: slot 1 or 2 (0 / 1)
     FxMenu         menu_;             // SHIFT + FX slot menu
+    LfoMenu        lfo_menu_;         // SHIFT + LFO mode menu
+    bool           rec_pending_ = false; // REC down: arms on release
+    bool           play_shift_  = false; // PLAY went down with SHIFT held
+    bool           play_used_   = false; // ...and a track was cleared meanwhile
+    static constexpr uint32_t kClearHoldMs = 2000;
+    int            clear_track_   = -1;
+    uint32_t       clear_start_   = 0;
+    int            cleared_track_ = -1;
+    uint32_t       cleared_ms_    = 0;
     bool           fx_held_  = false; // FX button down: encoders = FX mixer
     bool           fx_used_  = false; // an encoder moved while FX was down
     uint32_t       now_ms_   = 0;     // Process() runs at 1 kHz

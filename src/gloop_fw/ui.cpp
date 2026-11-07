@@ -91,12 +91,18 @@ void Ui::Draw(const UiState& s)
     if(s.browser && s.browser->IsOpen())
     {
         DrawBrowser(s); // the menu takes over the whole screen
+        DrawClearOverlay(s);
         return;
     }
     DrawHeader(s);
-    if(s.fx_menu.open)
+    if(s.fx_menu.open || s.lfo_menu.open)
     {
-        DrawFxMenu(s); // the slot menu takes over the body and readouts
+        // the menus take over the body and readouts
+        if(s.fx_menu.open)
+            DrawFxMenu(s);
+        else
+            DrawLfoMenu(s);
+        DrawClearOverlay(s);
         DrawFooter(s);
         return;
     }
@@ -114,7 +120,83 @@ void Ui::Draw(const UiState& s)
         DrawPopup(s);
     g_.ResetClip();
     DrawReadouts(s);
+    DrawClearOverlay(s);
     DrawFooter(s);
+}
+
+// =============================================================================
+// Power-up screen: GLOOP, the two O's are tape reels
+//
+// The letters are 6x9 pixel glyphs drawn at 3x (18x27). The reels spin while
+// tape winds from the left reel onto the right one (t = 0 → 1), the tape
+// running between them under the word like the path past a cassette's head.
+// =============================================================================
+static const char* const kSplashG[9] = {".####.", "##..##", "##....", "##....", "##.###",
+                                        "##..##", "##..##", "##..##", ".####."};
+static const char* const kSplashL[9] = {"##....", "##....", "##....", "##....", "##....",
+                                        "##....", "##....", "##....", "######"};
+static const char* const kSplashP[9] = {"#####.", "##..##", "##..##", "##..##", "#####.",
+                                        "##....", "##....", "##....", "##...."};
+
+static void SplashGlyph(Gfx& g, const char* const* rows, int x, int y)
+{
+    for(int r = 0; r < 9; r++)
+        for(int c = 0; rows[r][c]; c++)
+            if(rows[r][c] == '#')
+            {
+                g.FillRect(x + c * 3 + 1, y + r * 3 + 1, 3, 3, D); // drop shadow
+                g.FillRect(x + c * 3, y + r * 3, 3, 3, W);
+            }
+}
+
+// One reel: rim, a pack of tape (pack 0..1 of the radius), hub and spokes
+void Ui::DrawReel(int cx, int cy, float angle, float pack, uint16_t c)
+{
+    const int r = 13;
+    g_.FillCircle(cx + 1, cy + 1, r, D); // shadow
+    g_.FillCircle(cx, cy, r, c);
+    g_.FillCircle(cx, cy, r - 2, B);
+    const int pr = 5 + int(pack * 6.f); // wound tape
+    g_.FillCircle(cx, cy, pr, M, true);
+    g_.FillCircle(cx, cy, 4, B);
+    for(int k = 0; k < 3; k++) // spokes, turning
+    {
+        const float a = angle + k * 2.0943951f;
+        g_.Line(cx + int(lroundf(cosf(a) * 4.f)), cy + int(lroundf(sinf(a) * 4.f)),
+                cx + int(lroundf(cosf(a) * float(r - 3))), cy + int(lroundf(sinf(a) * float(r - 3))), L);
+    }
+    g_.FillCircle(cx, cy, 2, c); // hub
+    g_.Pixel(cx, cy, B);
+}
+
+void Ui::DrawSplash(float t)
+{
+    t = fminf(1.f, fmaxf(0.f, t));
+    frame_++;
+    g_.ResetClip();
+    g_.Fill(B);
+    const int y = 34, cy = y + 13;
+    const int c1 = 65, c2 = 95; // reel centres
+    SplashGlyph(g_, kSplashG, 8, y);
+    SplashGlyph(g_, kSplashL, 30, y);
+    SplashGlyph(g_, kSplashP, 113, y);
+    // The tape: from under the left reel's pack, down past a little head
+    // between the reels, and up into the right reel's pack
+    const int   hx = (c1 + c2) / 2, hy = cy + 19;
+    const float left = 1.f - t, right = t; // tape winds left → right
+    g_.Line(c1, cy + 5 + int(left * 6.f), hx - 3, hy, M);
+    g_.Line(hx + 3, hy, c2, cy + 5 + int(right * 6.f), M);
+    g_.HLine(hx - 3, hx + 3, hy, L);
+    g_.FillRect(hx - 2, hy + 1, 5, 3, M); // the head
+    const float spin = float(frame_) * 0.35f;
+    DrawReel(c1, cy, spin, left, W);
+    DrawReel(c2, cy, spin, right, W);
+
+    g_.TextCentered(kSW / 2, 79, "GRANULAR LOOPER", L, Gfx::kSmall);
+    // Loading bar
+    const int bx = 40, bw = 60, by = 94;
+    g_.Rect(bx, by, bw, 5, D);
+    g_.FillRect(bx + 1, by + 1, int(float(bw - 2) * t), 3, W);
 }
 
 // ---- Header ------------------------------------------------------------------------
@@ -1418,11 +1500,6 @@ void Ui::DrawFxMenu(const UiState& s)
         g_.VLine(ax, 76, 80, M);
         g_.Line(ax - 2, 78, ax, 80, M);
         g_.Line(ax + 2, 78, ax, 80, M);
-        g_.Text(2, kReadTop + 1, "TURN", L, Gfx::kSmall);
-        g_.Text(22, kReadTop + 1, "PICK A SLOT", M, Gfx::kSmall);
-        g_.Text(2, kReadTop + 12, "PUSH", L, Gfx::kSmall);
-        g_.Text(22, kReadTop + 12, "CHOOSE ITS EFFECT", M, Gfx::kSmall);
-        g_.TextRight(kSW - 2, kReadTop + 1, "FX: DONE", M, Gfx::kSmall);
         return;
     }
 
@@ -1446,9 +1523,71 @@ void Ui::DrawFxMenu(const UiState& s)
         else if(!sel)
             g_.HLine(x0 + 16, x0 + w - 3, y + rowh - 1, D, true);
     }
-    g_.Text(2, kReadTop + 12, "PUSH", L, Gfx::kSmall);
-    g_.Text(22, kReadTop + 12, "SELECT", M, Gfx::kSmall);
-    g_.TextRight(kSW - 2, kReadTop + 12, "FX: BACK", M, Gfx::kSmall);
+}
+
+// SHIFT + LFO: LFO or ENVELOPE follower, as two rack units like the FX slots
+static const char* const kModeIcons[2][8] = {
+    {".........", "..##.....", ".#..#....", "#....#...", "......#..", ".......#.", "........#", "........."}, // LFO: a wave
+    {".........", "...#.....", "..#.#....", "..#..##..", ".#.....#.", ".#......#", "#........", "........."}, // ENV: attack, release
+};
+
+void Ui::DrawLfoMenu(const UiState& s)
+{
+    const LfoMenu& m   = s.lfo_menu;
+    const int      cur = s.params->lfo_mode > 0.5f ? 1 : 0;
+    g_.HLine(0, kSW - 1, kReadLine, D);
+    g_.Chip(1, 13, "LFO MODE", Gfx::kSmall);
+    static const char* const kNames[2] = {"LFO", "ENVELOPE"};
+    static const char* const kSub[2]   = {"WAVE: SHAPE AND RATE", "FOLLOWS A TRACK OR IN"};
+    for(int k = 0; k < 2; k++)
+    {
+        const bool     sel = m.cursor == k;
+        const int      y = 26 + k * 28, x0 = 8, w = 124, hgt = 21;
+        const uint16_t fg = sel ? B : W;
+        if(sel)
+            g_.FillRect(x0, y, w, hgt, W);
+        else
+            g_.Rect(x0, y, w, hgt, M);
+        g_.FillCircle(x0 + 4, y + 4, 1, sel ? B : D); // rack screws
+        g_.FillCircle(x0 + 4, y + hgt - 5, 1, sel ? B : D);
+        g_.FillCircle(x0 + w - 5, y + 4, 1, sel ? B : D);
+        g_.FillCircle(x0 + w - 5, y + hgt - 5, 1, sel ? B : D);
+        DrawMask(kModeIcons[k], 8, x0 + 10, y + 4, fg);
+        g_.Text(x0 + 24, y + 4, kNames[k], fg, Gfx::kBig);
+        g_.Text(x0 + 24, y + 13, kSub[k], sel ? D : M, Gfx::kSmall);
+        if(k == cur) // what this track uses now
+            g_.FillCircle(x0 + w - 12, y + hgt / 2, 2, sel ? B : L);
+    }
+}
+
+// SHIFT + PLAY + hold a track button: a box filling up over 2 s, then a
+// short "CLEARED"
+void Ui::DrawClearOverlay(const UiState& s)
+{
+    const bool holding = s.clear_track >= 0;
+    const bool done    = !holding && s.cleared_track >= 0 && s.cleared_age_ms < 900;
+    if(!holding && !done)
+        return;
+    const int x = 22, y = 34, w = 96, h = 34;
+    g_.FillRect(x, y, w, h, B);
+    g_.Rect(x, y, w, h, W);
+    g_.Rect(x + 1, y + 1, w - 2, h - 2, D);
+    char title[12] = "CLEAR T1";
+    if(holding)
+    {
+        title[7] = char('1' + s.clear_track);
+        g_.TextCentered(kSW / 2, y + 6, title, W, Gfx::kBig);
+        const float p  = fminf(1.f, fmaxf(0.f, s.clear_progress));
+        const int   bx = x + 10, bw = w - 20, by = y + 20;
+        g_.Rect(bx, by, bw, 7, M);
+        g_.FillRect(bx + 2, by + 2, int((bw - 4) * p), 3, W);
+    }
+    else
+    {
+        char msg[12] = "T1 CLEARED";
+        msg[1]       = char('1' + s.cleared_track);
+        g_.TextCentered(kSW / 2, y + 13, msg, W, Gfx::kBig);
+    }
 }
 
 // =============================================================================
@@ -1817,7 +1956,9 @@ void Ui::DrawFooter(const UiState& s)
     if(!s.shift)
     {
         const bool env = s.page == Page::Lfo && s.params->lfo_mode > 0.5f;
-        const char* title = s.fx_menu.open ? "FX SLOTS" : (env ? "ENV" : kPageNames[int(s.page)]);
+        const char* title = s.fx_menu.open    ? "FX SLOTS"
+                            : s.lfo_menu.open ? "LFO MODE"
+                            : (env ? "ENV" : kPageNames[int(s.page)]);
         g_.TextCentered(kSW / 2, kFootLine + 2, title, W, Gfx::kBig);
         int cur = 0, n = 1;
         if(s.page == Page::Grains)
@@ -1835,7 +1976,7 @@ void Ui::DrawFooter(const UiState& s)
             cur = env ? 1 : 0;
             n   = 2;
         }
-        if(n > 1 && !s.fx_menu.open)
+        if(n > 1 && !s.fx_menu.open && !s.lfo_menu.open)
         {
             const char pg[4] = {char('1' + cur), '/', char('0' + n), 0};
             g_.TextRight(kCornerR, kFootLine + 3, pg, cur > 0 ? W : M, Gfx::kSmall);

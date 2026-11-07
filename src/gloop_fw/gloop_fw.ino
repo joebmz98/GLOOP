@@ -502,7 +502,17 @@ __attribute__((optimize("O2"))) void AudioCallback(float** in, float** out, size
         {
             Track& tr = tracks[t];
             if(tr.count_left >= 0 && --tr.count_left < 0) // count-in over
-                tr.tape.StartRecording();                  // on the beat
+            {
+                tr.tape.StartRecording(); // on the beat
+                // ...and every stopped loop starts from its beginning with
+                // it, so you play along to them (they then grid-lock the take)
+                for(int o = 0; o < kNumTracks; o++)
+                    if(o != t && tracks[o].tape.HasLoop() && !tracks[o].tape.IsPlaying())
+                    {
+                        tracks[o].tape.Restart();
+                        playing[o] = true; // from this sample on
+                    }
+            }
             tr.tape.Write(in_l, in_r); // no-op unless armed or recording
             if(tr.tape.IsRecording() && !was_rec[t]) // take started this sample
             {
@@ -689,6 +699,22 @@ void setup()
     display.Init();
     ui.Init(&display, &envelopes);
 
+    // Power-up screen (~1.8 s): GLOOP with tape-reel O's
+    {
+        const uint32_t start = millis(), kSplashMs = 1800;
+        uint32_t       now   = start;
+        while(now - start < kSplashMs)
+        {
+            ui.DrawSplash(float(now - start) / float(kSplashMs));
+            display.Flush();
+            const uint32_t next = now + 33; // ~30 fps
+            while(millis() < next) {}
+            now = millis();
+        }
+        ui.DrawSplash(1.f);
+        display.Flush();
+    }
+
     cpu.Init(sample_rate, kBlockSize);
     DAISY.begin(AudioCallback);
     midi_clock.RaisePriority(); // UART above audio, so no MIDI bytes are lost
@@ -772,6 +798,11 @@ void loop()
         s.enc          = controls.Context(); // what each encoder edits now
         s.fx_page      = controls.fx_page();
         s.fx_menu      = controls.fx_menu();
+        s.lfo_menu       = controls.lfo_menu();
+        s.clear_track    = controls.clear_track();
+        s.clear_progress = controls.clear_progress();
+        s.cleared_track  = controls.cleared_track();
+        s.cleared_age_ms = controls.cleared_age_ms();
         s.popup        = controls.popup();
         s.popup_age_ms = controls.popup_age_ms();
         s.muted         = controls.muted(sel);

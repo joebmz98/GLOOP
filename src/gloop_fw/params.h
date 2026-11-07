@@ -177,6 +177,13 @@ struct FxMenu
     int  slot   = 0; // the slot being changed (level 1)
 };
 
+// SHIFT + LFO: pick the selected track's modulation source
+struct LfoMenu
+{
+    bool open   = false;
+    int  cursor = 0; // 0 = LFO, 1 = ENVELOPE follower
+};
+
 // Everything that decides what an encoder edits right now
 struct EncoderContext
 {
